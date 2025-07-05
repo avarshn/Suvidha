@@ -24,11 +24,6 @@ def get_llm():
     )
     return llm
 
-# State definition
-class BotState(TypedDict):
-    messages: Annotated[list, add_messages]
-    content: dict  # Holds product content in JSON format
-
 # System instruction
 SYS_INSTRUCTION = """You are a shopping assistant helping users find products. 
 
@@ -56,6 +51,11 @@ Be helpful, informative, and focus on helping users make informed purchasing dec
 
 WELCOME_MSG = "Welcome to Suvidha! How can I assist you with your shopping needs today?"
 
+class BotState(TypedDict):
+    """Shared state flowing through the app graph."""
+    messages: Annotated[list, add_messages]
+    content: dict
+
 # Product content retrieval tool
 @tool
 def get_content(query: str) -> List[dict]:
@@ -64,7 +64,11 @@ def get_content(query: str) -> List[dict]:
     query = "site:reddit.com " + query
     
     try:
-        results = get_search_results(query, api_key=os.getenv("SERP_API_KEY"))
+        api_key = os.getenv("SERP_API_KEY")
+        if not api_key:
+            raise ValueError("SERP_API_KEY environment variable is not set")
+        
+        results = get_search_results(query, api_key=api_key)
         
         # Transform into structured objects
         search_response = SearchAPIResponse.from_json(results)
@@ -166,6 +170,32 @@ def initialize_session_state():
             "messages": st.session_state.messages,
             "content": st.session_state.content
         }
+    # Ensure preference store exists
+    if "user_preferences" not in st.session_state:
+        st.session_state.user_preferences = {}
+
+# ------------------------------
+# Preference graph renderer
+# ------------------------------
+
+def render_preference_graph() -> None:
+    """Display the user preference graph as a Graphviz chart."""
+    prefs: dict[str, int] = st.session_state.get("user_preferences", {})
+    if not prefs:
+        st.info("No preferences detected yet – chat to build the graph.")
+        return
+
+    dot = [
+        "digraph Preferences {",
+        "  rankdir=LR;",
+        "  User [shape=ellipse, style=filled, color=lightblue];",
+    ]
+    for k, w in sorted(prefs.items(), key=lambda x: -x[1])[:25]:
+        safe = k.replace("\"", "\\\"")
+        dot.append(f'  "{safe}" [shape=box, style=filled, color=lightyellow];')
+        dot.append(f'  User -> "{safe}" [label="{w}"];')
+    dot.append("}")
+    st.graphviz_chart("\n".join(dot))
 
 def main():
     st.set_page_config(
@@ -224,7 +254,17 @@ def main():
         st.subheader("📋 Reddit Posts Found")
         
         # Create tabs for better organization
-        tab1, tab2 = st.tabs(["💬 Chat", "📰 Reddit Posts"])
+        tab1, tab2, tab3 = st.tabs(["💬 Chat", "📰 Reddit Posts", "🧠 Preferences"])
+        
+        with tab1:
+            # Render chat history
+            for msg in st.session_state.messages:
+                if isinstance(msg, AIMessage):
+                    with st.chat_message("assistant"):
+                        st.markdown(msg.content)
+                elif isinstance(msg, HumanMessage):
+                    with st.chat_message("user"):
+                        st.markdown(msg.content)
         
         with tab2:
             valid_posts = [item for item in st.session_state.content if isinstance(item, dict) and 'title' in item]
@@ -250,26 +290,8 @@ def main():
                                 if j < len(post['comments'][:3]) - 1:
                                     st.divider()
         
-        with tab1:
-            # Chat interface
-            # Display chat messages
-            for message in st.session_state.messages:
-                if isinstance(message, AIMessage):
-                    with st.chat_message("assistant"):
-                        st.markdown(message.content)
-                elif isinstance(message, HumanMessage):
-                    with st.chat_message("user"):
-                        st.markdown(message.content)
-    else:
-        # Chat interface (when no content is available)
-        # Display chat messages
-        for message in st.session_state.messages:
-            if isinstance(message, AIMessage):
-                with st.chat_message("assistant"):
-                    st.markdown(message.content)
-            elif isinstance(message, HumanMessage):
-                with st.chat_message("user"):
-                    st.markdown(message.content)
+        with tab3:
+            render_preference_graph()
 
     # Chat input
     if prompt := st.chat_input("What are you looking for today?"):
@@ -289,10 +311,50 @@ def main():
                 st.session_state.messages = st.session_state.bot_state["messages"]
                 st.session_state.content = updated_content
                 
+                # Update preference graph with the latest user query
+                update_user_preferences(prompt)
+                
                 st.markdown(response_content)
         
         # Force rerun to update the chat
         st.rerun()
+
+def update_user_preferences(user_query: str) -> None:
+    """Extract preferences from the latest user query via the LLM and merge into the graph."""
+    if not user_query or not isinstance(user_query, str):
+        return
+
+    system_prompt = (
+        "You are an assistant that extracts a shopper's preference keywords from ONE message. "
+        "Return ONLY a JSON object mapping concise lowercase keywords (1-3 words) to an integer weight 1-5. "
+        "Example: {\"mirrorless camera\": 5, \"sony\": 4}. No extra text."
+    )
+
+    llm = get_llm()
+    try:
+        response = llm.invoke([
+            SystemMessage(content=system_prompt),
+            HumanMessage(content=user_query),
+        ])
+        txt_resp = response.content if isinstance(response.content, str) else str(response.content)
+        txt_resp = txt_resp.strip()
+        import re, json
+        if not txt_resp.startswith("{"):
+            match = re.search(r"\{[\s\S]*\}", txt_resp)
+            txt_resp = match.group(0) if match else "{}"
+        prefs_fragment: dict[str, int] = json.loads(txt_resp)
+
+        # Merge into existing store
+        prefs_store: dict[str, int] = st.session_state.get("user_preferences", {})
+        for k, v in prefs_fragment.items():
+            try:
+                weight = int(v)
+            except Exception:
+                continue
+            prefs_store[k] = max(prefs_store.get(k, 0), weight)
+        st.session_state.user_preferences = prefs_store
+    except Exception as exc:
+        st.warning(f"Preference extraction failed: {exc}")
 
 if __name__ == "__main__":
     main()
