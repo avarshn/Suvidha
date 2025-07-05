@@ -250,9 +250,7 @@ def main():
             st.rerun()
 
     # Display Reddit posts if available
-    if st.session_state.content:
-        st.subheader("📋 Reddit Posts Found")
-        
+    if st.session_state.content:        
         # Create tabs for better organization
         tab1, tab2, tab3 = st.tabs(["💬 Chat", "📰 Reddit Posts", "🧠 Preferences"])
         
@@ -260,8 +258,9 @@ def main():
             # Render chat history
             for msg in st.session_state.messages:
                 if isinstance(msg, AIMessage):
-                    with st.chat_message("assistant"):
-                        st.markdown(msg.content)
+                    if msg.content and str(msg.content).strip():
+                        with st.chat_message("assistant"):
+                            st.markdown(msg.content)
                 elif isinstance(msg, HumanMessage):
                     with st.chat_message("user"):
                         st.markdown(msg.content)
@@ -292,6 +291,17 @@ def main():
         
         with tab3:
             render_preference_graph()
+
+    else:
+        # Render chat history when no content is available so the welcome message is visible
+        for msg in st.session_state.messages:
+            if isinstance(msg, AIMessage):
+                if msg.content and str(msg.content).strip():
+                    with st.chat_message("assistant"):
+                        st.markdown(msg.content)
+            elif isinstance(msg, HumanMessage):
+                with st.chat_message("user"):
+                    st.markdown(msg.content)
 
     # Chat input
     if prompt := st.chat_input("What are you looking for today?"):
