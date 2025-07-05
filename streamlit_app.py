@@ -255,23 +255,22 @@ def main():
             }
             st.rerun()
 
-    # Display Reddit posts if available
-    if st.session_state.content:        
-        # Create tabs for better organization
-        tab1, tab2, tab3 = st.tabs(["💬 Chat", "📰 Reddit Posts", "🧠 Preferences"])
-        
-        with tab1:
-            # Render chat history
-            for msg in st.session_state.messages:
-                if isinstance(msg, AIMessage):
-                    if msg.content and str(msg.content).strip():
-                        with st.chat_message("assistant"):
-                            st.markdown(msg.content)
-                elif isinstance(msg, HumanMessage):
-                    with st.chat_message("user"):
+    # Always show tabs for better organization
+    tab1, tab2, tab3 = st.tabs(["💬 Chat", "📰 Reddit Posts", "🧠 Preferences"])
+    
+    with tab1:
+        # Render chat history
+        for msg in st.session_state.messages:
+            if isinstance(msg, AIMessage):
+                if msg.content and str(msg.content).strip():
+                    with st.chat_message("assistant"):
                         st.markdown(msg.content)
-        
-        with tab2:
+            elif isinstance(msg, HumanMessage):
+                with st.chat_message("user"):
+                    st.markdown(msg.content)
+    
+    with tab2:
+        if st.session_state.content:
             valid_posts = [item for item in st.session_state.content if isinstance(item, dict) and 'title' in item]
             st.write(f"Found {len(valid_posts)} relevant Reddit posts:")
             
@@ -294,20 +293,16 @@ def main():
                                 st.write(f"💬 {comment.get('body', 'No content')}")
                                 if j < len(post['comments'][:3]) - 1:
                                     st.divider()
-        
-        with tab3:
-            render_preference_graph()
-
-    else:
-        # Render chat history when no content is available so the welcome message is visible
-        for msg in st.session_state.messages:
-            if isinstance(msg, AIMessage):
-                if msg.content and str(msg.content).strip():
-                    with st.chat_message("assistant"):
-                        st.markdown(msg.content)
-            elif isinstance(msg, HumanMessage):
-                with st.chat_message("user"):
-                    st.markdown(msg.content)
+        else:
+            st.info("🔍 **No Reddit posts found yet**")
+            st.markdown("Ask questions about products and I'll search Reddit for relevant discussions and reviews!")
+            st.markdown("**Try asking about:**")
+            st.markdown("- 'Best wireless headphones under $200'")
+            st.markdown("- 'Sony camera vs Canon for beginners'")
+            st.markdown("- 'Gaming laptop recommendations'")
+    
+    with tab3:
+        render_preference_graph()
 
     # Chat input
     if prompt := st.chat_input("What are you looking for today?"):
