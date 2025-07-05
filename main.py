@@ -39,7 +39,7 @@ class RedditResult:
     domain: str
     displayed_link: str
     snippet: str
-    snippet_highlighted_words: List[str]
+    # snippet_highlighted_words: List[str]
     favicon: str
 
 
@@ -65,7 +65,7 @@ class SearchAPIResponse:
                     domain=item["domain"],
                     displayed_link=item["displayed_link"],
                     snippet=item["snippet"],
-                    snippet_highlighted_words=item["snippet_highlighted_words"],
+                    # snippet_highlighted_words=item["snippet_highlighted_words"],
                     favicon=item["favicon"],
                 )
             )
