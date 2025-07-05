@@ -7,13 +7,48 @@ from langchain_groq import ChatGroq
 from langchain_core.tools import tool
 import json
 import os
+import io
 from dotenv import load_dotenv
 from search_cache import get_search_results  # Local caching
 from main import SearchAPIResponse, RedditResult, fetch_reddit_post
+from streamlit_mic_recorder import mic_recorder
+from groq import Groq
 
 # Load environment variables
 load_dotenv()
 
+# Speech-to-text handler class
+class SpeechHandler:
+    def __init__(self):
+        """Initialize the speech handler with Groq API."""
+        if not os.getenv("GROQ_API_KEY"):
+            st.error("❌ GROQ_API_KEY environment variable not set!")
+            st.stop()
+        
+        self.groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+    
+    def speech_to_text(self, audio_bytes):
+        """Convert speech to text using Groq Speech API."""
+        try:
+            # Create a BytesIO object from audio bytes
+            audio_bio = io.BytesIO(audio_bytes)
+            audio_bio.name = 'audio.webm'  # Set filename for Groq API
+            
+            # Use Groq's speech-to-text API
+            response = self.groq_client.audio.transcriptions.create(
+                model="whisper-large-v3-turbo",
+                file=audio_bio,
+                response_format="verbose_json"
+            )
+            return response.text
+        except Exception as e:
+            st.error(f"Error in speech-to-text: {e}")
+            return None
+
+# Initialize speech handler
+@st.cache_resource
+def get_speech_handler():
+    return SpeechHandler()
 
 # Initialize LLM with tools bound
 @st.cache_resource
@@ -166,6 +201,10 @@ def initialize_session_state():
             "messages": st.session_state.messages,
             "content": st.session_state.content
         }
+    if "processing_audio" not in st.session_state:
+        st.session_state.processing_audio = False
+    if "transcribed_text" not in st.session_state:
+        st.session_state.transcribed_text = ""
 
 def main():
     st.set_page_config(
@@ -176,6 +215,7 @@ def main():
     
     st.title("🛒 Suvidha - Shopping Assistant")
     st.markdown("Get personalized product recommendations based on Reddit discussions!")
+    st.markdown("**💬 Type your question or click 🎤 to speak**")
     
     # Initialize session state
     initialize_session_state()
@@ -185,6 +225,26 @@ def main():
         st.header("📊 Session Info")
         st.write(f"**Messages:** {len(st.session_state.messages)}")
         st.write(f"**Content Items:** {len(st.session_state.content) if st.session_state.content else 0}")
+        
+        # Speech functionality info
+        st.markdown("---")
+        st.subheader("🎤 Voice Features")
+        st.markdown("""
+        **Voice Input (Next to Chat Box):**
+        - 🎤 Click the microphone icon beside the chat input
+        - 🗣️ Speak your shopping question naturally
+        - ⏹️ Click stop when finished recording
+        - 📝 Your speech is converted to text automatically
+        - 🤖 AI responds just like with typed messages
+        """)
+        
+        if st.session_state.processing_audio:
+            st.info("🔄 Processing your voice...")
+        
+        if st.session_state.transcribed_text:
+            st.success(f"🎤 Last transcription: {st.session_state.transcribed_text[:50]}...")
+        
+        st.markdown("---")
         
         if st.session_state.content:
             st.subheader("🔍 Current Context")
@@ -209,6 +269,8 @@ def main():
             if len(valid_posts) > 3:
                 st.write(f"... and {len(valid_posts) - 3} more posts")
         
+        st.markdown("---")
+        
         # Clear chat button
         if st.button("🗑️ Clear Chat"):
             st.session_state.messages = [AIMessage(content=WELCOME_MSG)]
@@ -217,6 +279,8 @@ def main():
                 "messages": st.session_state.messages,
                 "content": st.session_state.content
             }
+            st.session_state.processing_audio = False
+            st.session_state.transcribed_text = ""
             st.rerun()
 
     # Display Reddit posts if available
@@ -271,8 +335,67 @@ def main():
                 with st.chat_message("user"):
                     st.markdown(message.content)
 
-    # Chat input
-    if prompt := st.chat_input("What are you looking for today?"):
+    # Integrated Chat input with microphone - Modern Design
+    st.markdown("### 💬 Ask your shopping question")
+    
+    # Create a container for the input area
+    input_container = st.container()
+    
+    with input_container:
+        # Create columns for chat input and microphone
+        input_col, mic_col = st.columns([6, 1])
+        
+        with input_col:
+            # Text chat input
+            prompt = st.chat_input("What are you looking for today? (Type or click 🎤 to speak)")
+        
+        with mic_col:
+            # Initialize speech handler
+            speech_handler = get_speech_handler()
+            
+            # Voice input section - sleek integrated design
+            if not st.session_state.processing_audio:
+                st.markdown('<div style="text-align: center; padding-top: 10px;">', unsafe_allow_html=True)
+                # Mic recorder component - compact design
+                audio = mic_recorder(
+                    start_prompt="🎤",
+                    stop_prompt="⏹️",
+                    just_once=True,
+                    use_container_width=True,
+                    format="webm",
+                    key='voice_recorder'
+                )
+                st.markdown('</div>', unsafe_allow_html=True)
+            else:
+                st.markdown('<div style="text-align: center; padding-top: 15px;">', unsafe_allow_html=True)
+                st.markdown("**🔄**")
+                st.caption("Processing...")
+                st.markdown('</div>', unsafe_allow_html=True)
+            
+            # Process audio input
+            if audio and not st.session_state.processing_audio:
+                st.session_state.processing_audio = True
+                
+                with st.spinner("🔄 Converting speech to text..."):
+                    transcribed_text = speech_handler.speech_to_text(audio['bytes'])
+                    
+                    if transcribed_text:
+                        st.session_state.transcribed_text = transcribed_text
+                        st.success(f"🎤 Transcribed: {transcribed_text}")
+                        # Use transcribed text as the prompt
+                        prompt = transcribed_text
+                    else:
+                        st.error("Could not transcribe your speech. Please try again.")
+                
+                st.session_state.processing_audio = False
+    
+    # Show transcribed text if available - styled feedback
+    if st.session_state.transcribed_text and not prompt:
+        st.info(f"🎤 **Voice Input:** {st.session_state.transcribed_text}")
+        st.markdown("*Processing your voice message...*")
+    
+    # Process user input (either typed or spoken)
+    if prompt:
         # Display user message
         with st.chat_message("user"):
             st.markdown(prompt)
@@ -290,6 +413,10 @@ def main():
                 st.session_state.content = updated_content
                 
                 st.markdown(response_content)
+        
+        # Clear transcribed text after processing
+        if st.session_state.transcribed_text:
+            st.session_state.transcribed_text = ""
         
         # Force rerun to update the chat
         st.rerun()
