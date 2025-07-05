@@ -117,8 +117,14 @@ def generate_response(state: BotState, user_input: str) -> tuple[str, dict]:
     # Prepare messages for LLM
     messages = [sys_msg] + state["messages"]
     
-    # Get LLM response
-    response = llm_with_tools.invoke(messages)
+    # Get LLM response with graceful failure handling
+    try:
+        response = llm_with_tools.invoke(messages)
+    except Exception as exc:
+        # Log and inform the user without crashing the Streamlit app
+        err_msg = f"⚠️ Sorry, I ran into an error while thinking: {exc}"
+        state["messages"].append(AIMessage(content=err_msg))
+        return err_msg, state["content"]
     
     # Handle tool calls
     if response.tool_calls:
