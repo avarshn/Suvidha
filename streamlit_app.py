@@ -8,7 +8,7 @@ from langchain_core.tools import tool
 import json
 import os
 from dotenv import load_dotenv
-from search_cache import get_search_results  # Local caching
+from search_cache import get_search_results, get_shopping_results # Local caching
 from main import SearchAPIResponse, RedditResult, fetch_reddit_post
 from groq import Groq
 import base64
@@ -427,6 +427,26 @@ def generate_response(state: BotState, user_input: str) -> tuple[str, dict, str,
                     seen.add(entity.get("product_name"))
                     unique_entities.append(entity)
             st.session_state.product_entities = unique_entities
+            
+            # Fetch shopping results with images for the new products
+            try:
+                with st.spinner("🛒 Fetching current prices and product images..."):
+                    shopping_results = get_shopping_results(product_list)
+                    if shopping_results:
+                        # Add to session state shopping results
+                        st.session_state.shopping_results.extend(shopping_results)
+                        # Keep only unique shopping results (by product_name)
+                        seen_shopping = set()
+                        unique_shopping = []
+                        for result in st.session_state.shopping_results:
+                            if result.get("product_name") not in seen_shopping:
+                                seen_shopping.add(result.get("product_name"))
+                                unique_shopping.append(result)
+                        st.session_state.shopping_results = unique_shopping
+                        st.success(f"✅ Found {len(shopping_results)} products with current pricing!")
+            except Exception as e:
+                print(f"Error fetching shopping results: {e}")
+                st.warning("⚠️ Could not fetch current pricing data. Please check the Shopping tab later.")
     except Exception as exc:
         # Check if it's a Groq API issue
         error_msg = str(exc).lower()
@@ -483,6 +503,26 @@ def generate_response(state: BotState, user_input: str) -> tuple[str, dict, str,
                         seen.add(entity.get("product_name"))
                         unique_entities.append(entity)
                 st.session_state.product_entities = unique_entities
+                
+                # Fetch shopping results with images for the new products
+                try:
+                    with st.spinner("🛒 Fetching current prices and product images..."):
+                        shopping_results = get_shopping_results(product_list)
+                        if shopping_results:
+                            # Add to session state shopping results
+                            st.session_state.shopping_results.extend(shopping_results)
+                            # Keep only unique shopping results (by product_name)
+                            seen_shopping = set()
+                            unique_shopping = []
+                            for result in st.session_state.shopping_results:
+                                if result.get("product_name") not in seen_shopping:
+                                    seen_shopping.add(result.get("product_name"))
+                                    unique_shopping.append(result)
+                            st.session_state.shopping_results = unique_shopping
+                            st.success(f"✅ Found {len(shopping_results)} products with current pricing!")
+                except Exception as e:
+                    print(f"Error fetching shopping results: {e}")
+                    st.warning("⚠️ Could not fetch current pricing data. Please check the Shopping tab later.")
         except Exception as exc:
             # Handle API errors in final response generation
             error_msg = str(exc).lower()
@@ -549,6 +589,9 @@ def initialize_session_state():
     # Store product entities for tracking
     if "product_entities" not in st.session_state:
         st.session_state.product_entities = []
+    # Store shopping results with images
+    if "shopping_results" not in st.session_state:
+        st.session_state.shopping_results = []
 
 # ------------------------------
 # Preference graph renderer
@@ -593,7 +636,7 @@ def main():
         st.write(f"**Content Items:** {len(st.session_state.content) if st.session_state.content else 0}")
         st.write(f"**User Preferences:** {len(st.session_state.user_preferences)}")
         st.write(f"**Product Entities:** {len(st.session_state.product_entities)}")
-        st.write(f"**Product Entities:** {(st.session_state.product_entities)}")
+        st.write(f"**Shopping Results:** {len(st.session_state.shopping_results)}")
         
         if st.session_state.user_preferences:
             st.subheader("🎯 Active Preferences")
@@ -608,9 +651,25 @@ def main():
             st.subheader("🛍️ Discussed Products")
             st.info("Products mentioned in our conversation")
             for entity in st.session_state.product_entities[:5]:  # Show top 5
-                st.write(f"• **{entity.get('product_name')}** ({entity.get('brand')} - {entity.get('category')})")
+                st.write(f"• **{entity.get('product_name')}** ({entity.get('brand')})")
             if len(st.session_state.product_entities) > 5:
                 st.write(f"... and {len(st.session_state.product_entities) - 5} more")
+        
+        if st.session_state.shopping_results:
+            st.subheader("🛒 Shopping Preview")
+            st.info("Current prices and availability")
+            for result in st.session_state.shopping_results[:3]:  # Show top 3
+                with st.container():
+                    col1, col2 = st.columns([1, 2])
+                    with col1:
+                        if result.get('thumbnail'):
+                            st.image(result['thumbnail'], width=60)
+                    with col2:
+                        st.write(f"**{result.get('title', 'Unknown')[:30]}...**")
+                        st.write(f"💲 {result.get('price', 'N/A')}")
+                    st.divider()
+            if len(st.session_state.shopping_results) > 3:
+                st.write(f"... and {len(st.session_state.shopping_results) - 3} more in Shopping tab")
         
         if st.session_state.content:
             st.subheader("🔍 Current Context")
@@ -671,6 +730,7 @@ def main():
             st.session_state.audio_control_states = {}
             st.session_state.last_played_audio = None
             st.session_state.product_entities = []
+            st.session_state.shopping_results = []
             st.session_state.bot_state = {
                 "messages": st.session_state.messages,
                 "content": st.session_state.content
@@ -678,7 +738,7 @@ def main():
             st.rerun()
 
     # Always show tabs for better organization
-    tab1, tab2, tab3 = st.tabs(["💬 Chat", "� Sources", "🧠 Preferences"])
+    tab1, tab2, tab3, tab4 = st.tabs(["💬 Chat", "📰 Sources", "🛒 Shopping", "🧠 Preferences"])
     
     with tab1:
         # Render chat history
@@ -766,6 +826,48 @@ def main():
             st.markdown("- 'Gaming laptop recommendations'")
     
     with tab3:
+        # Shopping Results with Images
+        if st.session_state.shopping_results:
+            st.write(f"🛒 **Shopping Results:** {len(st.session_state.shopping_results)} products found")
+            st.info("💰 Current prices and availability from various retailers")
+            
+            # Display shopping results in a grid
+            cols_per_row = 3
+            shopping_results = st.session_state.shopping_results
+            
+            for i in range(0, len(shopping_results), cols_per_row):
+                cols = st.columns(cols_per_row)
+                
+                for j, result in enumerate(shopping_results[i:i+cols_per_row]):
+                    with cols[j]:
+                        # Product image
+                        if result.get('thumbnail'):
+                            st.image(result['thumbnail'], width=200, use_container_width=True)
+                        else:
+                            st.empty()  # Placeholder if no image
+                        
+                        # Product details
+                        st.markdown(f"**{result.get('title', 'Unknown Product')}**")
+                        
+                        # Price with styling
+                        price = result.get('price', 'Price not available')
+                        st.markdown(f"💲 **{price}**")
+                        
+                        # Product links
+                        if result.get('product_link'):
+                            st.markdown(f"[🔗 View Product]({result['product_link']})")
+                        
+                        # Extra spacing
+                        st.markdown("---")
+        else:
+            st.info("🛒 **No shopping results found yet**")
+            st.markdown("Ask about specific products and I'll find current prices and availability!")
+            st.markdown("**Try asking about:**")
+            st.markdown("- 'Show me iPhone 15 prices'")
+            st.markdown("- 'Find Sony headphones deals'")
+            st.markdown("- 'Best laptop under $1000'")
+    
+    with tab4:
         render_preference_graph()
 
     # Check if we need to play the latest audio response
