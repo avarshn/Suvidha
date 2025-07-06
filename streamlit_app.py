@@ -29,33 +29,55 @@ def get_llm():
     )
     return llm
 
+# Initialize LLM with tools bound
+@st.cache_resource
+def get_budget_llm():
+    llm = ChatGroq(
+        model="llama-3.1-8b-instant",  #"qwen/qwen3-32b", # ,
+        temperature=0.1,
+        max_retries=3,  # Add retry logic
+        timeout=30  # Add timeout
+    )
+    return llm
+
 # System instruction
 def get_system_instruction(user_preferences: dict) -> str:
     """Generate system instruction with user preferences included."""
-    base_instruction = """You are a shopping assistant helping users find products. 
+    base_instruction = """You are a helpful shopping assistant focused on providing clear, concise product recommendations.
 
-Use the provided product content and help the user in making informed decisions. 
-Ask clarifying questions to understand their needs better, but use the user's known preferences to ask more targeted questions.
+CORE GUIDELINES:
+- Give direct, user-friendly answers without technical jargon
+- Focus on practical benefits and real-world usage
+- Never include debug information, system messages, or technical processes in your response
+- Keep responses conversational and helpful
 
-You have access to one tool:
-- 'get_content' - searches Reddit for product information and reviews
+TOOL USAGE:
+- Use the 'get_content' tool only when you need specific product information
+- Don't use it for vague queries - ask for clarification first
+- Don't mention the tool or technical processes to the user
 
-You can use this tool to fetch structured product data based on user queries. But do not overuse it; only call it when necessary to provide detailed product information.
-Also do not call this tool if user query is not specific enough or if you already have sufficient context.
-If the user query is too vague, ask for more details before using the tool (This is Important).
+- Use the user's known preferences to ask more targeted questions.
 
-When making recommendations, prioritize the user's known preferences and use them to provide personalized suggestions.
+RESPONSE FORMAT:
+- Start with direct recommendations
+- Use clear headings for different products
+- Always show each recommendation in a new line, separarted by "\n".
+- Include Reddit citations as inline links: [[1]](https://reddit.com/link)
+- Never add a "Sources:" section
+- Keep descriptions concise but informative
 
-IMPORTANT: When you provide information based on Reddit posts, ALWAYS include citations as hyperlinks:
-- Use numbered citations [1], [2]. Each Reddit post in the data has a "link" field - use this for your hyperlinks to those numbered citations.
-- DO NOT create a separate "Sources:" section.
+WHAT TO AVOID:
+- Debug messages or system information
+- Technical processes or tool mentions
+- Overly verbose explanations
+- Redirecting users to external research
+- Try not to tell user to go to internet or other sources, its your job to find the best products for them based on Reddit discussions and reviews.
 
-Keep the product description user-friendly, with proper spaces between each product descriptions. You can add headings for each product recommendation too.
+Example good response:
+"**Sony WH-1000XM4** - Excellent noise cancellation and 30-hour battery life make these perfect for travel [1](https://reddit.com/r/headphones/...)
 
-Example format:
-"Sony WH-1000XM4 offers excellent noise cancellation and its long battery life..... [1](https://reddit.com/link2)"
-
-Note: Try not to tell user to go to internet or other sources, its your job to find the best products for them based on Reddit discussions and reviews."""
+**Bose QuietComfort 45** - Superior comfort for long listening sessions with great sound quality [2](https://reddit.com/r/bose/...)"
+"""
 
     # Add user preferences to the context if they exist
     if user_preferences:
@@ -169,10 +191,8 @@ def play_audio_hidden(audio_bytes, audio_id="current_audio"):
                 const currentAudio = document.getElementById('{audio_id}');
                 if (currentAudio) {{
                     currentAudio.muted = false;
-                    currentAudio.play().then(() => {{
-                        console.log('Audio started playing:', '{audio_id}');
-                    }}).catch(function(error) {{
-                        console.log('Audio play failed:', error);
+                    currentAudio.play().catch(function(error) {{
+                        // Audio play failed silently
                     }});
                 }}
             }}, 50);
@@ -185,7 +205,6 @@ def play_audio_hidden(audio_bytes, audio_id="current_audio"):
                     audio.currentTime = 0;
                     audio.muted = true;
                     audio.setAttribute('data-stopped', 'true');
-                    console.log('Stopped audio:', audioId);
                 }}
             }}
             
@@ -205,7 +224,6 @@ def play_audio_hidden(audio_bytes, audio_id="current_audio"):
             
             // Handle audio ending naturally
             window.audioEnded = function(audioId) {{
-                console.log('Audio ended naturally:', audioId);
                 // The ended state will be handled by Streamlit app logic
             }};
         </script>
@@ -251,6 +269,75 @@ def text_to_speech(text):
     except Exception as e:
         st.error(f"Error in text-to-speech: {e}")
         return None
+
+def get_product_entities(response) -> List[dict]:
+    """Extract product entities from the LLM response."""
+    try:
+
+        response_text = response.content if isinstance(response.content, str) else str(response.content)
+        
+        # Skip if response is empty or too short
+        if not response_text or len(response_text.strip()) < 10:
+            return []
+        
+        # Skip error messages
+        if any(error_indicator in response_text for error_indicator in ["🚫", "⚠️", "⏰", "⏱️", "Error"]):
+            return []
+        
+        system_prompt = """
+        You are an assistant that extracts product entities from shopping assistant responses.
+        Extract specific product names, brands, and categories mentioned in the text.
+        Return ONLY a JSON array of objects with this format:
+        [
+            {
+                "product_name": "Sony WH-1000XM4",
+                "brand": "Sony",
+            }
+        ]
+        
+        Only extract actual products that are specifically mentioned or recommended.
+        Do not extract generic terms or vague references.
+        If no specific products are found, return an empty array: []
+        """
+        
+        llm = get_llm()
+        extraction_response = llm.invoke([
+            SystemMessage(content=system_prompt),
+            HumanMessage(content=f"Extract product entities from this text:\n\n{response_text}")
+        ])
+        
+        # Parse the JSON response
+        txt_resp = extraction_response.content if isinstance(extraction_response.content, str) else str(extraction_response.content)
+        txt_resp = txt_resp.strip()
+
+        print(f"Extraction response: {extraction_response.content}")
+        
+        # Handle JSON extraction
+        import re, json
+        if not txt_resp.startswith("["):
+            match = re.search(r"\[[\s\S]*\]", txt_resp)
+            txt_resp = match.group(0) if match else "[]"
+        
+        product_entities = json.loads(txt_resp)
+        
+        # Validate the structure
+        if not isinstance(product_entities, list):
+            return []
+        
+        # Filter and validate each entity
+        valid_entities = []
+        for entity in product_entities:
+            if (isinstance(entity, dict) and 
+                entity.get("product_name") and 
+                entity.get("brand")):
+                valid_entities.append(entity)
+        
+        print(f"Valid entities: {valid_entities}")
+        return valid_entities
+        
+    except Exception as e:
+        # Silently fail and return empty list
+        return []
 
 def format_response_with_citations(response_content: str, sources: List[dict]) -> str:
     """Format response content to make inline links more visible."""
@@ -327,6 +414,19 @@ def generate_response(state: BotState, user_input: str) -> tuple[str, dict, str,
     # Get LLM response with graceful failure handling
     try:
         response = llm_with_tools.invoke(messages)
+        # Extract product entities from the response
+        product_list = get_product_entities(response)
+        # Store product entities in session state for tracking
+        if product_list:
+            st.session_state.product_entities.extend(product_list)
+            # Keep only unique entities (by product_name)
+            seen = set()
+            unique_entities = []
+            for entity in st.session_state.product_entities:
+                if entity.get("product_name") not in seen:
+                    seen.add(entity.get("product_name"))
+                    unique_entities.append(entity)
+            st.session_state.product_entities = unique_entities
     except Exception as exc:
         # Check if it's a Groq API issue
         error_msg = str(exc).lower()
@@ -371,6 +471,18 @@ def generate_response(state: BotState, user_input: str) -> tuple[str, dict, str,
         try:
             final_response = llm_with_tools.invoke([sys_msg] + state["messages"])
             response_content = final_response.content
+            # Extract product entities from the final response
+            product_list = get_product_entities(final_response)
+            if product_list:
+                st.session_state.product_entities.extend(product_list)
+                # Keep only unique entities (by product_name)
+                seen = set()
+                unique_entities = []
+                for entity in st.session_state.product_entities:
+                    if entity.get("product_name") not in seen:
+                        seen.add(entity.get("product_name"))
+                        unique_entities.append(entity)
+                st.session_state.product_entities = unique_entities
         except Exception as exc:
             # Handle API errors in final response generation
             error_msg = str(exc).lower()
@@ -434,6 +546,9 @@ def initialize_session_state():
         st.session_state.audio_control_states = {}
     if "last_played_audio" not in st.session_state:
         st.session_state.last_played_audio = None
+    # Store product entities for tracking
+    if "product_entities" not in st.session_state:
+        st.session_state.product_entities = []
 
 # ------------------------------
 # Preference graph renderer
@@ -477,6 +592,8 @@ def main():
         st.write(f"**Messages:** {len(st.session_state.messages)}")
         st.write(f"**Content Items:** {len(st.session_state.content) if st.session_state.content else 0}")
         st.write(f"**User Preferences:** {len(st.session_state.user_preferences)}")
+        st.write(f"**Product Entities:** {len(st.session_state.product_entities)}")
+        st.write(f"**Product Entities:** {(st.session_state.product_entities)}")
         
         if st.session_state.user_preferences:
             st.subheader("🎯 Active Preferences")
@@ -486,6 +603,14 @@ def main():
                 st.write(f"• {pref}: {weight}/5")
             if len(sorted_prefs) > 5:
                 st.write(f"... and {len(sorted_prefs) - 5} more")
+        
+        if st.session_state.product_entities:
+            st.subheader("🛍️ Discussed Products")
+            st.info("Products mentioned in our conversation")
+            for entity in st.session_state.product_entities[:5]:  # Show top 5
+                st.write(f"• **{entity.get('product_name')}** ({entity.get('brand')} - {entity.get('category')})")
+            if len(st.session_state.product_entities) > 5:
+                st.write(f"... and {len(st.session_state.product_entities) - 5} more")
         
         if st.session_state.content:
             st.subheader("🔍 Current Context")
@@ -545,6 +670,7 @@ def main():
             st.session_state.currently_playing_audio = None
             st.session_state.audio_control_states = {}
             st.session_state.last_played_audio = None
+            st.session_state.product_entities = []
             st.session_state.bot_state = {
                 "messages": st.session_state.messages,
                 "content": st.session_state.content
@@ -673,7 +799,6 @@ def main():
             // Check if currently playing audio has ended
             const currentAudio = document.getElementById('{st.session_state.currently_playing_audio}');
             if (currentAudio && currentAudio.ended) {{
-                console.log('Audio has ended, clearing state');
                 // Audio has ended naturally, will be handled by the app
             }}
         </script>
@@ -747,16 +872,23 @@ def update_user_preferences(user_query: str) -> None:
         return
 
     system_prompt = (
-        "You are an assistant that extracts a shopper's preference keywords from ONE message. "
-        "Return ONLY a JSON object mapping concise lowercase keywords (1-3 words) to an integer weight 1-5. "
-        "Example: {\"mirrorless camera\": 5, \"sony\": 4}. No extra text."
+        """
+        You are a helpful shopping assistant that extracts a user's product preferences and updates the user's previous preferences if they exist and keep it dynamic.
+        Return ONLY a JSON object mapping concise lowercase keywords (1-3 words) to an integer weight 1-5.
+        Example: {\"mirrorless camera\": 5, \"sony\": 4}. No extra text.
+"""
     )
+    
+    user_prompt = f"""
+    User query: {user_query}
+    Previous preferences: {st.session_state.user_preferences}
+    """
 
     llm = get_llm()
     try:
         response = llm.invoke([
             SystemMessage(content=system_prompt),
-            HumanMessage(content=user_query),
+            HumanMessage(content=user_prompt),
         ])
         txt_resp = response.content if isinstance(response.content, str) else str(response.content)
         txt_resp = txt_resp.strip()
@@ -766,18 +898,18 @@ def update_user_preferences(user_query: str) -> None:
             txt_resp = match.group(0) if match else "{}"
         prefs_fragment: dict[str, int] = json.loads(txt_resp)
 
-        # Merge into existing store
-        prefs_store: dict[str, int] = st.session_state.get("user_preferences", {})
-        for k, v in prefs_fragment.items():
-            try:
-                weight = int(v)
-            except Exception:
-                continue
-            prefs_store[k] = max(prefs_store.get(k, 0), weight)
-        st.session_state.user_preferences = prefs_store
+        # # Merge into existing store
+        # prefs_store: dict[str, int] = st.session_state.get("user_preferences", {})
+        # for k, v in prefs_fragment.items():
+        #     try:
+        #         weight = int(v)
+        #     except Exception:
+        #         continue
+        #     prefs_store[k] = max(prefs_store.get(k, 0), weight)
+        st.session_state.user_preferences = prefs_fragment
     except Exception as exc:
         # Silently fail for preference extraction to not interrupt the main flow
-        print(f"Preference extraction failed: {exc}")  # Log to console instead of showing warning
+        pass  # Log failures silently to avoid interrupting user experience
 
 if __name__ == "__main__":
     main()
