@@ -10,6 +10,9 @@ import os
 from dotenv import load_dotenv
 from search_cache import get_search_results  # Local caching
 from main import SearchAPIResponse, RedditResult, fetch_reddit_post
+from groq import Groq
+import base64
+from io import BytesIO
 
 # Load environment variables
 load_dotenv()
@@ -101,8 +104,43 @@ def get_content(query: str) -> List[dict]:
     except Exception as e:
         return [{"error": f"Failed to fetch content: {str(e)}"}]
 
+def generate_tldr(response_content: str) -> str:
+    """Generate a 2-line TLDR summary of the main response"""
+    try:
+        llm = get_llm()
+        
+        tldr_prompt = f"""Please summarize the following shopping assistant response in exactly 2 lines.
+Make it concise and capture the key recommendations or insights.
+
+Response to summarize:
+{response_content}
+
+TLDR (2 lines):"""
+        
+        tldr_response = llm.invoke([HumanMessage(content=tldr_prompt)])
+        tldr_content = tldr_response.content.strip()
+        
+        # Ensure it's exactly 2 lines
+        lines = tldr_content.split('\n')
+        lines = [line.strip() for line in lines if line.strip()]
+        
+        if len(lines) >= 2:
+            return f"{lines[0]}\n{lines[1]}"
+        elif len(lines) == 1:
+            # If only one line, split it or add a second line
+            if len(lines[0]) > 80:
+                mid_point = lines[0].rfind(' ', 0, 80)
+                if mid_point > 0:
+                    return f"{lines[0][:mid_point]}\n{lines[0][mid_point+1:]}"
+            return f"{lines[0]}\nBased on Reddit discussions and user experiences."
+        else:
+            return "Key insights from Reddit discussions.\nRecommendations based on user experiences."
+    
+    except Exception as e:
+        return "Product recommendations summary.\nBased on Reddit user discussions."
+    
 # Node: Generate assistant response
-def generate_response(state: BotState, user_input: str) -> tuple[str, dict]:
+def generate_response(state: BotState, user_input: str) -> tuple[str, dict, str]:
     """Generate assistant response using LLM with tool calling capability"""
     
     # Add user message to state
@@ -124,7 +162,7 @@ def generate_response(state: BotState, user_input: str) -> tuple[str, dict]:
         # Log and inform the user without crashing the Streamlit app
         err_msg = f"⚠️ Sorry, I ran into an error while thinking: {exc}"
         state["messages"].append(AIMessage(content=err_msg))
-        return err_msg, state["content"]
+        return err_msg, state["content"], ""
     
     # Handle tool calls
     if response.tool_calls:
@@ -163,7 +201,10 @@ def generate_response(state: BotState, user_input: str) -> tuple[str, dict]:
         response_content = response.content
         state["messages"].append(AIMessage(content=response_content))
     
-    return response_content, state["content"]
+    # Generate TLDR for the response
+    tldr_content = generate_tldr(response_content)
+    
+    return response_content, state["content"], tldr_content
 
 # Initialize session state
 def initialize_session_state():
@@ -179,6 +220,9 @@ def initialize_session_state():
     # Ensure preference store exists
     if "user_preferences" not in st.session_state:
         st.session_state.user_preferences = {}
+    # Store TLDRs for each AI response
+    if "tldrs" not in st.session_state:
+        st.session_state.tldrs = {}
 
 # ------------------------------
 # Preference graph renderer
@@ -249,6 +293,7 @@ def main():
         if st.button("🗑️ Clear Chat"):
             st.session_state.messages = [AIMessage(content=WELCOME_MSG)]
             st.session_state.content = {}
+            st.session_state.tldrs = {}
             st.session_state.bot_state = {
                 "messages": st.session_state.messages,
                 "content": st.session_state.content
@@ -260,11 +305,20 @@ def main():
     
     with tab1:
         # Render chat history
-        for msg in st.session_state.messages:
+        for i, msg in enumerate(st.session_state.messages):
             if isinstance(msg, AIMessage):
                 if msg.content and str(msg.content).strip():
                     with st.chat_message("assistant"):
                         st.markdown(msg.content)
+                        
+                        # Add TLDR button for assistant messages (except welcome message)
+                        if msg.content != WELCOME_MSG:
+                            msg_key = f"tldr_{i}"
+                            # Check if TLDR exists for this message
+                            if msg_key in st.session_state.tldrs:
+                                with st.expander("📄 TLDR Summary", expanded=False):
+                                    st.info(st.session_state.tldrs[msg_key])
+                            
             elif isinstance(msg, HumanMessage):
                 with st.chat_message("user"):
                     st.markdown(msg.content)
@@ -313,7 +367,7 @@ def main():
         # Generate and display assistant response
         with st.chat_message("assistant"):
             with st.spinner("Thinking..."):
-                response_content, updated_content = generate_response(
+                response_content, updated_content, tldr_content = generate_response(
                     st.session_state.bot_state, 
                     prompt
                 )
@@ -326,6 +380,20 @@ def main():
                 update_user_preferences(prompt)
                 
                 st.markdown(response_content)
+                
+                # Store TLDR and show button
+                msg_index = len(st.session_state.messages) - 1
+                msg_key = f"tldr_{msg_index}"
+                
+                # Store the TLDR
+                if tldr_content:
+                    st.session_state.tldrs[msg_key] = tldr_content
+                    
+                    # Show TLDR button
+                    if st.button("📝 TLDR", key=f"tldr_btn_{msg_index}"):
+                        pass  # Just to trigger rerun for expander state
+                    with st.expander("📄 TLDR Summary", expanded=False):
+                        st.info(tldr_content)
         
         # Force rerun to update the chat
         st.rerun()
