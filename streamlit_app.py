@@ -22,7 +22,7 @@ load_dotenv()
 @st.cache_resource
 def get_llm():
     llm = ChatGroq(
-        model="qwen/qwen3-32b", # "llama-3.3-70b-versatile",
+        model="llama-3.3-70b-versatile",  #"qwen/qwen3-32b", # ,
         temperature=0.1
     )
     return llm
