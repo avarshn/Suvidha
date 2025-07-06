@@ -23,34 +23,52 @@ load_dotenv()
 def get_llm():
     llm = ChatGroq(
         model="llama-3.3-70b-versatile",  #"qwen/qwen3-32b", # ,
-        temperature=0.1
+        temperature=0.1,
+        max_retries=3,  # Add retry logic
+        timeout=30  # Add timeout
     )
     return llm
 
 # System instruction
-SYS_INSTRUCTION = """You are a shopping assistant helping users find products. 
+def get_system_instruction(user_preferences: dict) -> str:
+    """Generate system instruction with user preferences included."""
+    base_instruction = """You are a shopping assistant helping users find products. 
 
 Use the provided product content and help the user in making informed decisions. 
-Maybe ask clarifying questions to understand their needs better.
-You can give information about products and all from the content provided, if user asks.
+Ask clarifying questions to understand their needs better, but use the user's known preferences to ask more targeted questions.
 
-You have access to a tool called 'get_content' that can search Reddit for product information and reviews.
-(Do not mention this tool to the user, just use it when needed.)
-Use this tool when:
-- Users ask about specific products or brands
-- Users want recommendations for a category of products
-- Users need reviews or opinions about products
-- Users ask for comparisons between products
+You have access to one tool:
+- 'get_content' - searches Reddit for product information and reviews
 
-DO NOT use the tool when:
-- Users are just greeting or having general conversation
-- Users ask about your capabilities or general questions
-- Users are asking follow-up questions about already retrieved content
+You can use this tool to fetch structured product data based on user queries. But do not overuse it; only call it when necessary to provide detailed product information.
+Also do not call this tool if user query is not specific enough or if you already have sufficient context.
+If the user query is too vague, ask for more details before using the tool (This is Important).
 
-When you use the tool, make sure to provide helpful analysis and recommendations based on the Reddit discussions found.
-If you already have product content available, use it to answer questions without calling the tool again unless the user asks for different products.
+When making recommendations, prioritize the user's known preferences and use them to provide personalized suggestions.
 
-Be helpful, informative, and focus on helping users make informed purchasing decisions."""
+IMPORTANT: When you provide information based on Reddit posts, ALWAYS include citations as hyperlinks:
+- Use numbered citations [1], [2]. Each Reddit post in the data has a "link" field - use this for your hyperlinks to those numbered citations.
+- DO NOT create a separate "Sources:" section.
+
+Keep the product description user-friendly, with proper spaces between each product descriptions. You can add headings for each product recommendation too.
+
+Example format:
+"Sony WH-1000XM4 offers excellent noise cancellation and its long battery life..... [1](https://reddit.com/link2)"
+
+Note: Try not to tell user to go to internet or other sources, its your job to find the best products for them based on Reddit discussions and reviews."""
+
+    # Add user preferences to the context if they exist
+    if user_preferences:
+        pref_text = "\n\nUSER PREFERENCES (use these to personalize recommendations):\n"
+        sorted_prefs = sorted(user_preferences.items(), key=lambda x: x[1], reverse=True)
+        for pref, weight in sorted_prefs:
+            pref_text += f"- {pref}: {weight}/5 importance\n"
+        pref_text += "\nUse these preferences to provide more targeted recommendations and ask fewer clarifying questions."
+        base_instruction += pref_text
+    else:
+        base_instruction += "\n\nNOTE: This user has no known preferences yet, so you may need to ask more clarifying questions to understand their needs."
+
+    return base_instruction
 
 WELCOME_MSG = "Welcome to Suvidha! How can I assist you with your shopping needs today?"
 
@@ -83,10 +101,21 @@ def get_content(query: str) -> List[dict]:
             # Fetch post metadata and top-level comments
             try:
                 post = fetch_reddit_post(reddit_result.link)
+                
+                # Extract subreddit from the link for better citations
+                subreddit = "unknown"
+                if "/r/" in post.link:
+                    try:
+                        subreddit = post.link.split("/r/")[1].split("/")[0]
+                    except:
+                        pass
+                
                 product_data.append({
                     "title": post.title,
                     "description": post.description[:200] + ('...' if len(post.description) > 200 else ''),
                     "link": post.link,
+                    "subreddit": subreddit,
+                    "source_citation": f"{post.title} - r/{subreddit} (Reddit discussion)",
                     "comments": [
                         {
                             "id": comment.id,
@@ -103,6 +132,8 @@ def get_content(query: str) -> List[dict]:
         return product_data
     except Exception as e:
         return [{"error": f"Failed to fetch content: {str(e)}"}]
+
+
 
 def play_audio_hidden(audio_bytes, audio_id="current_audio"):
     """Play audio automatically without showing controls."""
@@ -126,13 +157,25 @@ def play_audio_hidden(audio_bytes, audio_id="current_audio"):
             Your browser does not support the audio element.
         </audio>
         <script>
-            // Stop all other audio first
+            // Aggressively stop ALL audio elements first
             document.querySelectorAll('audio').forEach(function(audio) {{
-                if (audio.id !== '{audio_id}') {{
-                    audio.pause();
-                    audio.currentTime = 0;
-                }}
+                audio.pause();
+                audio.currentTime = 0;
+                audio.muted = true;  // Mute first to prevent any sound
             }});
+            
+            // Wait a moment then unmute and play only the new audio
+            setTimeout(() => {{
+                const currentAudio = document.getElementById('{audio_id}');
+                if (currentAudio) {{
+                    currentAudio.muted = false;
+                    currentAudio.play().then(() => {{
+                        console.log('Audio started playing:', '{audio_id}');
+                    }}).catch(function(error) {{
+                        console.log('Audio play failed:', error);
+                    }});
+                }}
+            }}, 50);
             
             // Function to stop specific audio
             function stopAudio(audioId) {{
@@ -140,6 +183,7 @@ def play_audio_hidden(audio_bytes, audio_id="current_audio"):
                 if (audio) {{
                     audio.pause();
                     audio.currentTime = 0;
+                    audio.muted = true;
                     audio.setAttribute('data-stopped', 'true');
                     console.log('Stopped audio:', audioId);
                 }}
@@ -154,6 +198,7 @@ def play_audio_hidden(audio_bytes, audio_id="current_audio"):
                     document.querySelectorAll('audio').forEach(function(audio) {{
                         audio.pause();
                         audio.currentTime = 0;
+                        audio.muted = true;
                     }});
                 }}
             }};
@@ -163,16 +208,6 @@ def play_audio_hidden(audio_bytes, audio_id="current_audio"):
                 console.log('Audio ended naturally:', audioId);
                 // The ended state will be handled by Streamlit app logic
             }};
-            
-            // Auto-play the current audio
-            const currentAudio = document.getElementById('{audio_id}');
-            if (currentAudio) {{
-                currentAudio.play().then(() => {{
-                    console.log('Audio started playing:', '{audio_id}');
-                }}).catch(function(error) {{
-                    console.log('Audio play failed:', error);
-                }});
-            }}
         </script>
         """
         
@@ -217,14 +252,26 @@ def text_to_speech(text):
         st.error(f"Error in text-to-speech: {e}")
         return None
 
+def format_response_with_citations(response_content: str, sources: List[dict]) -> str:
+    """Format response content to make inline links more visible."""
+    
+    if not sources:
+        return response_content
+    
+    # The LLM should already include inline hyperlinks, so we just return the content
+    # This function is kept for potential future enhancements
+    return response_content
+
 def generate_tldr(response_content: str) -> str:
     """Generate a 2-line TLDR summary of the main response"""
     try:
         llm = get_llm()
         
         tldr_prompt = f"""Please summarize the following shopping assistant response in exactly 2 lines.
-Make it concise and capture the key recommendations or insights.
+Make it concise and capture the key recommendations or insights. The main goal is to add TTS support for this summary, because the main response is too long for TTS to handle effectively.
+So you shouldn't loose any important details, but make sure the summary is short enough to be read aloud in a reasonable time. And keep it as friendly and engaging as possible.
 
+If the response is already concise, just return it as is.
 Response to summarize:
 {response_content}
 
@@ -250,7 +297,13 @@ TLDR (2 lines):"""
             return "Key insights from Reddit discussions.\nRecommendations based on user experiences."
     
     except Exception as e:
-        return "Product recommendations summary.\nBased on Reddit user discussions."
+        # Return a fallback TLDR if API fails
+        if "headphone" in response_content.lower():
+            return "Headphone recommendations found.\nBased on Reddit user discussions."
+        elif "laptop" in response_content.lower():
+            return "Laptop recommendations found.\nBased on Reddit user discussions."
+        else:
+            return "Product recommendations summary.\nBased on Reddit user discussions."
     
 # Node: Generate assistant response
 def generate_response(state: BotState, user_input: str) -> tuple[str, dict, str, BytesIO]:
@@ -262,8 +315,11 @@ def generate_response(state: BotState, user_input: str) -> tuple[str, dict, str,
     # Bind tools to LLM
     llm_with_tools = get_llm().bind_tools([get_content])
     
-    # Create system message
-    sys_msg = SystemMessage(content=SYS_INSTRUCTION)
+    # Get user preferences from session state
+    user_preferences = st.session_state.get("user_preferences", {})
+    
+    # Create system message with user preferences
+    sys_msg = SystemMessage(content=get_system_instruction(user_preferences))
     
     # Prepare messages for LLM
     messages = [sys_msg] + state["messages"]
@@ -272,8 +328,17 @@ def generate_response(state: BotState, user_input: str) -> tuple[str, dict, str,
     try:
         response = llm_with_tools.invoke(messages)
     except Exception as exc:
-        # Log and inform the user without crashing the Streamlit app
-        err_msg = f"⚠️ Sorry, I ran into an error while thinking: {exc}"
+        # Check if it's a Groq API issue
+        error_msg = str(exc).lower()
+        if "503" in error_msg or "service unavailable" in error_msg or "upstream" in error_msg:
+            err_msg = "🚫 **Groq API is currently experiencing issues.** This is a temporary service outage. Please try again in a few minutes, or check [Groq's status page](https://status.groq.com/) for updates."
+        elif "rate limit" in error_msg or "429" in error_msg:
+            err_msg = "⏰ **Rate limit reached.** Please wait a moment before trying again."
+        elif "timeout" in error_msg:
+            err_msg = "⏱️ **Request timeout.** The API took too long to respond. Please try again."
+        else:
+            err_msg = f"⚠️ **API Error:** {exc}\n\nThis appears to be a temporary issue. Please try again in a moment."
+        
         state["messages"].append(AIMessage(content=err_msg))
         return err_msg, state["content"], "", None
     
@@ -303,8 +368,20 @@ def generate_response(state: BotState, user_input: str) -> tuple[str, dict, str,
                     st.success(f"Fetched {len(tool_result)} Reddit posts for analysis")
         
         # Get final response after tool execution
-        final_response = llm_with_tools.invoke([sys_msg] + state["messages"])
-        response_content = final_response.content
+        try:
+            final_response = llm_with_tools.invoke([sys_msg] + state["messages"])
+            response_content = final_response.content
+        except Exception as exc:
+            # Handle API errors in final response generation
+            error_msg = str(exc).lower()
+            if "503" in error_msg or "service unavailable" in error_msg or "upstream" in error_msg:
+                response_content = "🚫 **Groq API is currently experiencing issues.** I was able to fetch the product information, but couldn't generate the final response. Please try asking your question again in a few minutes."
+            else:
+                response_content = f"⚠️ **Error generating response:** {exc}\n\nI fetched the product data successfully, but couldn't process the final response. Please try again."
+        
+        # Format response with better citations
+        if state["content"]:
+            response_content = format_response_with_citations(response_content, state["content"])
         
         # Add final AI response to state
         state["messages"].append(AIMessage(content=response_content))
@@ -320,8 +397,10 @@ def generate_response(state: BotState, user_input: str) -> tuple[str, dict, str,
     # Generate audio response using TLDR if TTS is enabled
     audio_response = None
     if st.session_state.get("tts_enabled", True) and tldr_content:
-        with st.spinner("🔊 Generating audio summary..."):
-            audio_response = text_to_speech(tldr_content)
+        # Only generate audio for non-error responses
+        if not any(error_indicator in response_content for error_indicator in ["🚫", "⚠️", "⏰", "⏱️"]):
+            with st.spinner("🔊 Generating audio summary..."):
+                audio_response = text_to_speech(tldr_content)
     
     return response_content, state["content"], tldr_content, audio_response
 
@@ -397,6 +476,16 @@ def main():
         st.header("📊 Session Info")
         st.write(f"**Messages:** {len(st.session_state.messages)}")
         st.write(f"**Content Items:** {len(st.session_state.content) if st.session_state.content else 0}")
+        st.write(f"**User Preferences:** {len(st.session_state.user_preferences)}")
+        
+        if st.session_state.user_preferences:
+            st.subheader("🎯 Active Preferences")
+            st.info("These preferences are automatically included in the AI context")
+            sorted_prefs = sorted(st.session_state.user_preferences.items(), key=lambda x: x[1], reverse=True)
+            for pref, weight in sorted_prefs[:5]:  # Show top 5
+                st.write(f"• {pref}: {weight}/5")
+            if len(sorted_prefs) > 5:
+                st.write(f"... and {len(sorted_prefs) - 5} more")
         
         if st.session_state.content:
             st.subheader("🔍 Current Context")
@@ -424,6 +513,12 @@ def main():
         # TTS Controls
         st.subheader("🔊 Text-to-Speech")
         st.session_state.tts_enabled = st.checkbox("Enable TTS", value=st.session_state.tts_enabled, help="Enable automatic text-to-speech for AI responses")
+        
+        # API Status section
+        st.subheader("🌐 API Status")
+        st.info("💡 If you see API errors, it means Groq's servers are temporarily busy. Try again in a few minutes!")
+        if st.button("🔄 Check Groq Status"):
+            st.markdown("[Visit Groq Status Page](https://status.groq.com/)")
         
         # Debug info
         if st.session_state.currently_playing_audio:
@@ -457,7 +552,7 @@ def main():
             st.rerun()
 
     # Always show tabs for better organization
-    tab1, tab2, tab3 = st.tabs(["💬 Chat", "📰 Reddit Posts", "🧠 Preferences"])
+    tab1, tab2, tab3 = st.tabs(["💬 Chat", "� Sources", "🧠 Preferences"])
     
     with tab1:
         # Render chat history
@@ -511,14 +606,18 @@ def main():
     with tab2:
         if st.session_state.content:
             valid_posts = [item for item in st.session_state.content if isinstance(item, dict) and 'title' in item]
-            st.write(f"Found {len(valid_posts)} relevant Reddit posts:")
+            st.write(f"📚 **Source Material:** {len(valid_posts)} Reddit discussions referenced in the chat")
+            st.info("💡 Click on any hyperlink in the chat responses to jump directly to these Reddit discussions!")
             
             for i, post in enumerate(valid_posts):
-                with st.expander(f"📝 {post.get('title', 'Unknown Title')}", expanded=i==0):
+                subreddit = post.get('subreddit', 'unknown')
+                
+                with st.expander(f"📝 {post.get('title', 'Unknown Title')} - r/{subreddit}", expanded=False):
                     col1, col2 = st.columns([3, 1])
                     
                     with col1:
                         st.write(f"**Description:** {post.get('description', 'No description available')}")
+                        st.write(f"**Subreddit:** r/{subreddit}")
                         st.write(f"**Link:** [{post.get('link', '#')}]({post.get('link', '#')})")
                     
                     with col2:
@@ -548,14 +647,18 @@ def main():
         latest_audio_key = max(st.session_state.audio_responses.keys())
         latest_audio = st.session_state.audio_responses[latest_audio_key]
         
-        # Only play if we haven't already played this audio
+        # Only play if we haven't already played this audio and no other audio is playing
         if (latest_audio and 
             st.session_state.currently_playing_audio != latest_audio_key and
-            st.session_state.last_played_audio != latest_audio_key):
+            st.session_state.last_played_audio != latest_audio_key and
+            st.session_state.currently_playing_audio is None):  # Extra check to prevent duplicates
             
-            # Stop any currently playing audio first
+            # Ensure no audio is playing before starting new one
             if st.session_state.currently_playing_audio:
                 stop_audio(st.session_state.currently_playing_audio)
+                # Add a small delay to ensure the previous audio stops
+                import time
+                time.sleep(0.1)
             
             play_audio_hidden(latest_audio, latest_audio_key)
             st.session_state.last_played_audio = latest_audio_key
@@ -611,11 +714,16 @@ def main():
                     msg_key = f"audio_{msg_index}"
                     
                     if audio_response:
+                        # Stop any currently playing audio first to prevent duplicates
+                        if st.session_state.currently_playing_audio:
+                            stop_audio(st.session_state.currently_playing_audio)
+                            st.session_state.currently_playing_audio = None
+                        
                         st.session_state.audio_responses[msg_key] = audio_response
-                        # Only set play flag if this is a new audio response
-                        if msg_key not in st.session_state.audio_control_states:
+                        # Only set play flag if this is a new audio response and no audio is currently playing
+                        if msg_key not in st.session_state.audio_control_states and not st.session_state.currently_playing_audio:
                             st.session_state.play_latest_audio = True
-                        st.session_state.audio_control_states[msg_key] = "playing"
+                            st.session_state.audio_control_states[msg_key] = "playing"
                     
                     # Store TLDR and show button
                     tldr_key = f"tldr_{msg_index}"
@@ -668,7 +776,8 @@ def update_user_preferences(user_query: str) -> None:
             prefs_store[k] = max(prefs_store.get(k, 0), weight)
         st.session_state.user_preferences = prefs_store
     except Exception as exc:
-        st.warning(f"Preference extraction failed: {exc}")
+        # Silently fail for preference extraction to not interrupt the main flow
+        print(f"Preference extraction failed: {exc}")  # Log to console instead of showing warning
 
 if __name__ == "__main__":
     main()
