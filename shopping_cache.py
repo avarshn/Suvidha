@@ -68,5 +68,5 @@ def get_shopping_results(query: str, api_key: str, engine: str = "google_shoppin
     fresh_results = _fetch_from_api(query, api_key, engine)
     cache[key] = fresh_results
     _save_cache(cache)
-    logging.info("Saved Shopping results to cache for product: '%s'", key)
+    logging.info("Saved %d Shopping results to cache for product: '%s'", len(fresh_results.get("shopping_results", [])), key)
     return fresh_results 

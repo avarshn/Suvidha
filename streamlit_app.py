@@ -12,6 +12,7 @@ from search_cache import get_search_results  # Local caching
 from main import SearchAPIResponse, RedditResult, fetch_reddit_post
 from shopping_cache import get_shopping_results
 from streamlit_product_card import product_card
+import streamlit.components.v1 as components
 # Load environment variables
 load_dotenv()
 
@@ -122,24 +123,21 @@ def get_content(query: str) -> List[dict]:
 # -------------------------------------------------
 
 @tool
-def get_products(query: str) -> List[dict]:
+def get_products(query: str, max_results: int = 1) -> List[dict]:
     """Fetch product offers from Google Shopping SearchAPI.
 
     Returns a list of product dictionaries compatible with the UI card renderer.
+    max_results: how many offers to return (default 1)
     """
-
     user_query = query.strip()
-
     api_key = os.getenv("SERP_API_KEY")
     if not api_key:
         return [{"error": "SERP_API_KEY environment variable is not set"}]
-
     try:
-        # Use SearchAPI's dedicated shopping engine to focus on product offers
+        print(f"Fetching products for query: {user_query}\t results: {max_results}")
         shopping_raw = get_shopping_results(user_query, api_key, engine="google_shopping")
-
         product_list: List[dict] = []
-        for item in shopping_raw.get("shopping_results", []):
+        for item in shopping_raw.get("shopping_results", [])[:max_results]:
             title_val = item.get("title") or item.get("name") or item.get("product_title")
             product_list.append({
                 "title": title_val or "Unknown Product",
@@ -150,7 +148,6 @@ def get_products(query: str) -> List[dict]:
                 "product_image": item.get("thumbnail") or item.get("image"),
                 "source": "google_shopping",
             })
-
         return product_list
     except Exception as exc:
         return [{"error": f"Failed to fetch products: {str(exc)}"}]
@@ -176,7 +173,7 @@ def generate_response(state: BotState, user_input: str) -> tuple[str, dict]:
         response = llm_with_tools.invoke(messages)
     except Exception as exc:
         # Log and inform the user without crashing the Streamlit app
-        err_msg = f"⚠️ Sorry, I ran into an error while thinking: {exc}"
+        err_msg = f":material/error: Sorry, I ran into an error while thinking: {exc}"
         state["messages"].append(AIMessage(content=err_msg))
         return err_msg, state["content"]
     
@@ -236,20 +233,18 @@ def generate_response(state: BotState, user_input: str) -> tuple[str, dict]:
         # -----------------------------
         queries = extract_product_queries(response_content)
         if queries:
-            # Use a simple union to avoid duplicates across tool calls
             existing_titles = {p.get("title", "").lower() for p in state.get("products", [])}
+            # If only one product, fetch up to 5; else, fetch only 1 per product
+            max_results = 5 if len(queries) == 1 else 1
             for q in queries:
                 if q in existing_titles:
                     continue
                 with st.spinner(f"🛒 Searching offers for '{q}'"):
-                    prod_results = get_products.invoke({"query": q})
+                    prod_results = get_products.invoke({"query": q, "max_results": max_results})
                     if isinstance(prod_results, list):
-                        # Update both bot_state and root products list
                         products_store = state.setdefault("products", [])
                         products_store.extend(prod_results)
                         st.session_state.products.extend(prod_results)
-
-                        # Add as ToolMessage to message history for transparency
                         state["messages"].append(ToolMessage(
                             content=json.dumps(prod_results),
                             tool_call_id=f"auto_products_{q}"
@@ -475,6 +470,8 @@ def main():
                             description=prod.get("description", ""),
                             product_image=prod.get("product_image"),
                             price=prod.get("price"),
+                            button_text="",
+                            on_button_click=lambda url=prod.get("link", "#"): open_url(url),
                             key=f"card_{hash(prod.get('link', '') + str(idx) + str(i))}"
                         )
         else:
@@ -623,6 +620,11 @@ def extract_product_queries(reply: str) -> List[str]:
     except Exception:
         pass
     return []
+
+def open_url(url: str):
+    """Open a URL in a new browser tab from Streamlit callback."""
+    js = f"window.open('{url}', '_blank')"
+    components.html(f"<script>{js}</script>", height=0)
 
 if __name__ == "__main__":
     main()
