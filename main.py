@@ -137,7 +137,7 @@ def main() -> None:
     load_dotenv()
 
     # Fetch the API key securely from environment variables
-    api_key = os.getenv("SERP_API_KEY")
+    api_key = os.getenv("SEARCH_API_KEY")
     if not api_key:
         raise EnvironmentError(
             "SEARCH_API_KEY not found in environment variables. Please set it in your .env file."

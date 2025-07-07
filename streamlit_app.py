@@ -63,9 +63,9 @@ def get_content(query: str) -> List[dict]:
     query = "site:reddit.com " + query
     
     try:
-        api_key = os.getenv("SERP_API_KEY")
+        api_key = os.getenv("SEARCH_API_KEY")
         if not api_key:
-            raise ValueError("SERP_API_KEY environment variable is not set")
+            raise ValueError("SEARCH_API_KEY environment variable is not set")
         
         results = get_search_results(query, api_key=api_key)
         
