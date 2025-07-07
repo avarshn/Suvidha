@@ -18,3 +18,5 @@ watchdog
 streamlit-mic-recorder
 scipy
 groq
+streamlit-product-card
+google-search-results

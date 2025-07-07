@@ -10,6 +10,8 @@ import os
 from dotenv import load_dotenv
 from search_cache import get_search_results  # Local caching
 from main import SearchAPIResponse, RedditResult, fetch_reddit_post
+from shopping_cache import get_shopping_results
+from streamlit_product_card import product_card
 # Load environment variables
 load_dotenv()
 
@@ -54,51 +56,104 @@ class BotState(TypedDict):
     """Shared state flowing through the app graph."""
     messages: Annotated[list, add_messages]
     content: dict
+    products: list
 
 # Product content retrieval tool
 @tool
 def get_content(query: str) -> List[dict]:
-    """Fetches structured product data based on user query from Reddit discussions."""
-    
-    query = "site:reddit.com " + query
-    
+    """Fetch structured product data from Reddit discussions and Google Shopping.
+
+    The result is a unified list of dictionaries so downstream components (chat UI, summariser)
+    can treat every item uniformly. For Google Shopping items we include an empty ``comments``
+    list so existing code that iterates over that key continues to work without changes.
+    """
+
+    user_query = query.strip()
+
+    # Build separate query strings for Reddit (dorked) and Shopping
+    reddit_query = f"site:reddit.com {user_query}"
+
     try:
         api_key = os.getenv("SEARCH_API_KEY")
         if not api_key:
             raise ValueError("SEARCH_API_KEY environment variable is not set")
-        
-        results = get_search_results(query, api_key=api_key)
-        
+
+        # -----------------------------
+        # 1) Reddit Posts via Google
+        # -----------------------------
+        reddit_serp = get_search_results(reddit_query, api_key=api_key)
+
         # Transform into structured objects
-        search_response = SearchAPIResponse.from_json(results)
+        search_response = SearchAPIResponse.from_json(reddit_serp)
         reddit_results = search_response.reddit_results
-        
-        product_data = []
-        
+
+        product_data: List[dict] = []
+
         for reddit_result in reddit_results:
             # Fetch post metadata and top-level comments
             try:
                 post = fetch_reddit_post(reddit_result.link)
                 product_data.append({
                     "title": post.title,
-                    "description": post.description[:200] + ('...' if len(post.description) > 200 else ''),
+                    "description": post.description[:200] + ("..." if len(post.description) > 200 else ""),
                     "link": post.link,
                     "comments": [
                         {
                             "id": comment.id,
                             "author": comment.author,
-                            "body": comment.body[:150] + ('...' if len(comment.body) > 150 else ''),
-                            "score": comment.score
+                            "body": comment.body[:150] + ("..." if len(comment.body) > 150 else ""),
+                            "score": comment.score,
                         }
                         for comment in post.comments[:5]  # Limit to first 5 comments
-                    ]
+                    ],
+                    "source": "reddit",
                 })
-            except Exception as exc:
+            except Exception:
+                # Skip individual post failures without aborting entire run
                 continue
-        
+
+        # Return ONLY Reddit-based product discussion data
         return product_data
     except Exception as e:
         return [{"error": f"Failed to fetch content: {str(e)}"}]
+
+# -------------------------------------------------
+# New tool: Fetch product offers from Google Shopping
+# -------------------------------------------------
+
+@tool
+def get_products(query: str) -> List[dict]:
+    """Fetch product offers from Google Shopping SearchAPI.
+
+    Returns a list of product dictionaries compatible with the UI card renderer.
+    """
+
+    user_query = query.strip()
+
+    api_key = os.getenv("SERP_API_KEY")
+    if not api_key:
+        return [{"error": "SERP_API_KEY environment variable is not set"}]
+
+    try:
+        # Use SearchAPI's dedicated shopping engine to focus on product offers
+        shopping_raw = get_shopping_results(user_query, api_key, engine="google_shopping")
+
+        product_list: List[dict] = []
+        for item in shopping_raw.get("shopping_results", []):
+            title_val = item.get("title") or item.get("name") or item.get("product_title")
+            product_list.append({
+                "title": title_val or "Unknown Product",
+                "description": item.get("description") or item.get("source", ""),
+                "link": item.get("product_link", "#"),
+                "price": item.get("price"),
+                "rating": item.get("rating"),
+                "product_image": item.get("thumbnail") or item.get("image"),
+                "source": "google_shopping",
+            })
+
+        return product_list
+    except Exception as exc:
+        return [{"error": f"Failed to fetch products: {str(exc)}"}]
 
 # Node: Generate assistant response
 def generate_response(state: BotState, user_input: str) -> tuple[str, dict]:
@@ -107,8 +162,8 @@ def generate_response(state: BotState, user_input: str) -> tuple[str, dict]:
     # Add user message to state
     state["messages"].append(HumanMessage(content=user_input))
     
-    # Bind tools to LLM
-    llm_with_tools = get_llm().bind_tools([get_content])
+    # Bind tools to LLM (Reddit + Shopping)
+    llm_with_tools = get_llm().bind_tools([get_content, get_products])
     
     # Create system message
     sys_msg = SystemMessage(content=SYS_INSTRUCTION)
@@ -150,6 +205,19 @@ def generate_response(state: BotState, user_input: str) -> tuple[str, dict]:
                     state["messages"].append(tool_message)
                     
                     st.success(f"Fetched {len(tool_result)} Reddit posts for analysis")
+            elif tool_call["name"] == "get_products":
+                with st.spinner(f"Fetching product offers for: {tool_call['args']['query']}"):
+                    tool_result = get_products.invoke(tool_call["args"])
+
+                    # Update products list in state
+                    state["products"] = tool_result
+
+                    tool_message = ToolMessage(
+                        content=json.dumps(tool_result),
+                        tool_call_id=tool_call["id"]
+                    )
+                    state["messages"].append(tool_message)
+                    st.success(f"Fetched {len(tool_result)} product offers")
         
         # Get final response after tool execution
         final_response = llm_with_tools.invoke([sys_msg] + state["messages"])
@@ -162,6 +230,32 @@ def generate_response(state: BotState, user_input: str) -> tuple[str, dict]:
         
         # Add final AI response to state
         state["messages"].append(AIMessage(content=response_content))
+        
+        # -----------------------------
+        # Auto-fetch product offers mentioned in the reply
+        # -----------------------------
+        queries = extract_product_queries(response_content)
+        if queries:
+            # Use a simple union to avoid duplicates across tool calls
+            existing_titles = {p.get("title", "").lower() for p in state.get("products", [])}
+            for q in queries:
+                if q in existing_titles:
+                    continue
+                with st.spinner(f"🛒 Searching offers for '{q}'"):
+                    prod_results = get_products.invoke({"query": q})
+                    if isinstance(prod_results, list):
+                        # Update both bot_state and root products list
+                        products_store = state.setdefault("products", [])
+                        products_store.extend(prod_results)
+                        st.session_state.products.extend(prod_results)
+
+                        # Add as ToolMessage to message history for transparency
+                        state["messages"].append(ToolMessage(
+                            content=json.dumps(prod_results),
+                            tool_call_id=f"auto_products_{q}"
+                        ))
+            if state.get("products"):
+                st.toast("Product offers updated!", icon="🛒")
         
     else:
         # No tool calls, just add the response
@@ -184,11 +278,15 @@ def initialize_session_state():
     if "bot_state" not in st.session_state:
         st.session_state.bot_state = {
             "messages": st.session_state.messages,
-            "content": st.session_state.content
+            "content": st.session_state.content,
+            "products": [],
         }
     # Ensure preference store exists
     if "user_preferences" not in st.session_state:
         st.session_state.user_preferences = {}
+    # Ensure a top-level products cache for UI convenience
+    if "products" not in st.session_state:
+        st.session_state.products = []
 
 # ------------------------------
 # Preference graph renderer
@@ -319,6 +417,12 @@ def main():
             
             if len(valid_posts) > 3:
                 st.write(f"... and {len(valid_posts) - 3} more posts")
+
+            # Show detected products list
+            if st.session_state.products:
+                st.subheader(":material/local_mall: Products Detected")
+                for p in st.session_state.products:
+                    st.markdown(f"- [{p.get('title','Unknown')}]({p.get('link','#')})")
         
         # Clear chat button
         if st.button(":material/delete: Clear Chat"):
@@ -331,9 +435,14 @@ def main():
             st.rerun()
 
     # Always show tabs for better organization
-    tab1, tab2, tab3 = st.tabs([":material/chat: Chat", ":material/newspaper: Reddit Posts", ":material/neurology: Preferences"])
+    tab_chat, tab_products, tab_posts, tab_prefs = st.tabs([
+        ":material/chat: Chat", 
+        ":material/local_mall: Products", 
+        ":material/newspaper: Reddit Posts", 
+        ":material/neurology: Preferences"
+    ])
     
-    with tab1:
+    with tab_chat:
         # Render chat history inside scrollable area (about 70% of viewport)
         with st.container(height=0):  # placeholder to attach CSS class
             st.markdown(
@@ -352,41 +461,58 @@ def main():
                         st.markdown(msg.content)
             st.markdown("</div>", unsafe_allow_html=True)
     
-    with tab2:
+    with tab_products:
+        products = st.session_state.products
+        if products:
+            st.subheader(":material/local_mall: Products")
+            rows = [products[i:i+3] for i in range(0, len(products), 3)]
+            for i, row in enumerate(rows):
+                cols = st.columns(len(row))
+                for idx, prod in enumerate(row):
+                    with cols[idx]:
+                        product_card(
+                            product_name=prod.get("title", "Unknown Product"),
+                            description=prod.get("description", ""),
+                            product_image=prod.get("product_image"),
+                            price=prod.get("price"),
+                            key=f"card_{hash(prod.get('link', '') + str(idx) + str(i))}"
+                        )
+        else:
+            st.info("No product offers fetched yet. Ask about products to see offers here.")
+    
+    with tab_posts:
         if st.session_state.content:
-            valid_posts = [item for item in st.session_state.content if isinstance(item, dict) and 'title' in item]
-            st.write(f"Found {len(valid_posts)} relevant Reddit posts:")
-            
-            # Wrap posts list in a scrollable container – mirrors chat scrolling behaviour
-            with st.container(height=600):
-                for i, post in enumerate(valid_posts):
-                    with st.expander(f":material/article: {post.get('title', 'Unknown Title')}", expanded=i==0):
-                        col1, col2 = st.columns([3, 1])
-                        
-                        with col1:
-                            st.write(f"**Description:** {post.get('description', 'No description available')}")
-                            st.write(f"**Link:** [{post.get('link', '#')}]({post.get('link', '#')})")
-                        
-                        with col2:
-                            st.metric("Comments", len(post.get('comments', [])))
-                        
-                        if post.get('comments'):
-                            st.write("**Top Comments:**")
-                            for j, comment in enumerate(post['comments'][:3]):  # Show top 3 comments
-                                with st.container():
-                                    st.write(f":material/person: **{comment.get('author', 'Unknown')}** (Score: {comment.get('score', 0)})")
-                                    st.write(f":material/chat: {comment.get('body', 'No content')}")
-                                    if j < len(post['comments'][:3]) - 1:
-                                        st.divider()
+            # Separate reddit posts and shopping items
+            reddit_posts = [item for item in st.session_state.content if item.get("source") == "reddit"]
+
+            if reddit_posts:
+                st.subheader(":material/newspaper: Reddit Posts")
+                st.write(f"Found {len(reddit_posts)} relevant Reddit posts:")
+                with st.container(height=600):
+                    for i, post in enumerate(reddit_posts):
+                        with st.expander(f":material/article: {post.get('title', 'Unknown Title')}", expanded=i==0):
+                            col1, col2 = st.columns([3, 1])
+
+                            with col1:
+                                st.write(f"**Description:** {post.get('description', 'No description available')}")
+                                st.write(f"**Link:** [{post.get('link', '#')}]({post.get('link', '#')})")
+
+                            with col2:
+                                st.metric("Comments", len(post.get('comments', [])))
+
+                            if post.get('comments'):
+                                st.write("**Top Comments:**")
+                                for j, comment in enumerate(post['comments'][:3]):
+                                    with st.container():
+                                        st.write(f":material/person: **{comment.get('author', 'Unknown')}** (Score: {comment.get('score', 0)})")
+                                        st.write(f":material/chat: {comment.get('body', 'No content')}")
+                                        if j < len(post['comments'][:3]) - 1:
+                                            st.divider()
         else:
             st.info(":material/search: **No Reddit posts found yet**")
             st.markdown("Ask questions about products and I'll search Reddit for relevant discussions and reviews!")
-            st.markdown("**Try asking about:**")
-            st.markdown("- 'Best wireless headphones under $200'")
-            st.markdown("- 'Sony camera vs Canon for beginners'")
-            st.markdown("- 'Gaming laptop recommendations'")
     
-    with tab3:
+    with tab_prefs:
         render_preference_graph()
 
     # Chat input
@@ -451,6 +577,52 @@ def update_user_preferences(user_query: str) -> None:
         st.session_state.user_preferences = prefs_store
     except Exception as exc:
         st.warning(f"Preference extraction failed: {exc}")
+
+# -------------------------------------------------
+# Helper: Extract product keywords from assistant reply
+# -------------------------------------------------
+
+def extract_product_queries(reply: str) -> List[str]:
+    """Use the LLM to identify product names/categories mentioned in a reply.
+
+    Returns a **deduplicated** list of product query strings. The prompt asks the
+    LLM to output ONLY a JSON array of strings, e.g. ["sony wh-1000xm5", "bose qc45"].
+    """
+    if not reply or not isinstance(reply, str):
+        return []
+
+    system_prompt = (
+        "You are an assistant that extracts PRODUCT NAMES OR CATEGORIES from the given assistant message. "
+        "Return ONLY a JSON array of strings, lower-case, no extra text. "
+        "Ignore general nouns that are not product specific. If none, return [] ."
+    )
+
+    llm = get_llm()
+    try:
+        resp = llm.invoke([
+            SystemMessage(content=system_prompt),
+            HumanMessage(content=reply),
+        ])
+        txt = resp.content if isinstance(resp.content, str) else str(resp.content)
+        import json, re
+        if not txt.strip().startswith("["):
+            m = re.search(r"\[[\s\S]*\]", txt)
+            txt = m.group(0) if m else "[]"
+        products = json.loads(txt)
+        if isinstance(products, list):
+            # normalise & dedupe
+            clean = []
+            seen = set()
+            for p in products:
+                if isinstance(p, str):
+                    s = p.strip().lower()
+                    if s and s not in seen:
+                        clean.append(s)
+                        seen.add(s)
+            return clean
+    except Exception:
+        pass
+    return []
 
 if __name__ == "__main__":
     main()
