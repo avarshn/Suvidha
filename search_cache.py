@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Dict, Any, List
 import requests
 import os
+from fake_useragent import UserAgent
 
 CACHE_FILE: Path = Path("search_cache.json")
 
@@ -114,7 +115,17 @@ def _fetch_shopping_from_searchapi(query: str, api_key: str, **kwargs) -> Dict[s
         if param in kwargs and kwargs[param] is not None:
             params[param] = kwargs[param]
     
-    response = requests.get(url, params=params, timeout=15)
+    
+    session = requests.session()
+    session.proxies = {}
+    session.proxies["http"] = "socks5h://localhost:9150"
+    session.proxies["https"] = "socks5h://localhost:9150"
+    # Update only the User-Agent header
+    session.headers.update(
+        {"User-Agent": UserAgent().random}
+    )  # Empty User-Agent or any custom value
+
+    response = session.get(url, params=params, timeout=15)
     response.raise_for_status()
     return response.json()
 

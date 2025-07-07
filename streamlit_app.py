@@ -13,6 +13,7 @@ from main import SearchAPIResponse, RedditResult, fetch_reddit_post
 from groq import Groq
 import base64
 from io import BytesIO
+import re, json
 
 # Load environment variables
 load_dotenv()
@@ -975,26 +976,56 @@ def update_user_preferences(user_query: str) -> None:
 
     system_prompt = (
         """
-        You are a helpful shopping assistant that extracts a user's product preferences and updates the user's previous preferences if they exist and keep it dynamic.
-        Return ONLY a JSON object mapping concise lowercase keywords (1-3 words) to an integer weight 1-5.
-        Example: {\"mirrorless camera\": 5, \"sony\": 4}. No extra text.
+        You are a smart shopping assistant that helps in extracting updated user's shopping or lifestyle preferences from user queries.
+        You are given the user's **Previous Preferences** and a new **User Query**
+        You extract user preferences from shopping conversations in the form of (subject, relation, object) triplets.
+        Note if the preferences is conflicting with any other preference, you update the user's previous preferences and keep it dynamic.
+
+        Always use "user" as the subject, if user is talking about themselves or their lifestyle.
+        Respond only with a JSON using this triplet extraction format:
+        { user_preferences : [ {"subject": "user", "relation": "bought", "object": "lenovo thinkpad"}]}
+        
+        Example:
+        From a user shopping conversation like:
+        "I recently bought a Lenovo ThinkPad and I’m looking for a mirrorless camera under $800."
+
+        Respond only with a JSON using this triplet extraction format:
+        { user_preferences : [ {"subject": "user", "relation": "bought", "object": "lenovo thinkpad"},
+        {"subject": "user", "relation": "interested in", "object": "mirrorless camera"}]}
+        
+        No extra explanation or text.
 """
     )
     
     user_prompt = f"""
-    User query: {user_query}
-    Previous preferences: {st.session_state.user_preferences}
+    User Query: {user_query}
+    Previous Preferences: {st.session_state.user_preferences}
     """
 
-    llm = get_llm()
     try:
-        response = llm.invoke([
-            SystemMessage(content=system_prompt),
-            HumanMessage(content=user_prompt),
-        ])
+        client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+        response = client.chat.completions.create(
+            model="llama-3.1-8b-instant",
+            messages=[
+                {
+                    "role": "system",
+                    "content": system_prompt
+                },
+                {
+                    "role": "user",
+                    "content": user_prompt
+                }
+            ],
+            response_format={"type": "json_object"}
+        )
+        
+        # response = llm.invoke([
+        #     SystemMessage(content=system_prompt),
+        #     HumanMessage(content=user_prompt),
+        # ])
         txt_resp = response.content if isinstance(response.content, str) else str(response.content)
         txt_resp = txt_resp.strip()
-        import re, json
+        
         if not txt_resp.startswith("{"):
             match = re.search(r"\{[\s\S]*\}", txt_resp)
             txt_resp = match.group(0) if match else "{}"
