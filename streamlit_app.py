@@ -282,6 +282,9 @@ def initialize_session_state():
     # Ensure a top-level products cache for UI convenience
     if "products" not in st.session_state:
         st.session_state.products = []
+    # Add speech processing state
+    if "processing_speech" not in st.session_state:
+        st.session_state.processing_speech = False
 
 # ------------------------------
 # Preference graph renderer
@@ -366,6 +369,40 @@ def inject_custom_css() -> None:
             max-height: 70vh;
             overflow-y: auto;
             padding-right: 0.5rem;
+        }
+        
+        /* Fixed mic button at bottom center */
+        .fixed-mic-button {
+            position: fixed;
+            bottom: 120px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 1000;
+            background: #ffffff;
+            border: 2px solid #e0e0e0;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            cursor: pointer;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 18px;
+            color: #666666;
+            transition: all 0.3s ease;
+        }
+        
+        .fixed-mic-button:hover {
+            background: #ffffff;
+            border-color: #c12525;
+            color: #c12525;
+            transform: translateX(-50%) scale(1.1);
+            box-shadow: 0 6px 16px rgba(0,0,0,0.2);
+        }
+        
+        .fixed-mic-button:active {
+            transform: translateX(-50%) scale(0.95);
         }
         </style>
         """,
@@ -537,6 +574,17 @@ def main():
         
         # Force rerun to update the chat
         st.rerun()
+    
+    # Fixed mic button at bottom center of screen
+    st.markdown(
+        """
+        <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
+        <button class="fixed-mic-button" onclick="alert('🎤 Voice input feature coming soon!')">
+            <span class="material-icons">mic</span>
+        </button>
+        """,
+        unsafe_allow_html=True,
+    )
 
 def update_user_preferences(user_query: str) -> None:
     """Extract preferences from the latest user query via the LLM and merge into the graph."""
