@@ -125,8 +125,7 @@ def get_content(query: str) -> List[dict]:
 # New tool: Fetch product offers from Google Shopping
 # -------------------------------------------------
 
-@tool
-def get_products(query: str, max_results: int = 1) -> List[dict]:
+def get_products_from_gshopping(query: str, max_results: int = 1) -> List[dict]:
     """Fetch product offers from Google Shopping SearchAPI.
 
     Returns a list of product dictionaries compatible with the UI card renderer.
@@ -163,7 +162,7 @@ def generate_response(state: BotState, user_input: str) -> tuple[str, dict]:
     state["messages"].append(HumanMessage(content=user_input))
     
     # Bind tools to LLM (Reddit + Shopping)
-    llm_with_tools = get_llm().bind_tools([get_content, get_products])
+    llm_with_tools = get_llm().bind_tools([get_content])
     
     # Create system message
     sys_msg = SystemMessage(content=SYS_INSTRUCTION)
@@ -205,66 +204,49 @@ def generate_response(state: BotState, user_input: str) -> tuple[str, dict]:
                     state["messages"].append(tool_message)
                     
                     st.success(f"Fetched {len(tool_result)} Reddit posts for analysis")
-            elif tool_call["name"] == "get_products":
-                with st.spinner(f"Fetching product offers for: {tool_call['args']['query']}"):
-                    tool_result = get_products.invoke(tool_call["args"])
 
-                    # Update products list in state
-                    state["products"] = tool_result
-
-                    tool_message = ToolMessage(
-                        content=json.dumps(tool_result),
-                        tool_call_id=tool_call["id"]
-                    )
-                    state["messages"].append(tool_message)
-                    st.success(f"Fetched {len(tool_result)} product offers")
-        
-        # Get final response after tool execution
-        final_response = llm_with_tools.invoke([sys_msg] + state["messages"])
-        response_content_raw = final_response.content
-        response_content = response_content_raw if isinstance(response_content_raw, str) else json.dumps(response_content_raw)
-        # Attach TL;DR summary to response
-        tldr_text = generate_tldr(response_content)
-        if tldr_text:
-            response_content = response_content + "\n\n**TL;DR:** " + tldr_text
-        
-        # Add final AI response to state
-        state["messages"].append(AIMessage(content=response_content))
-        
-        # -----------------------------
-        # Auto-fetch product offers mentioned in the reply
-        # -----------------------------
-        queries = extract_product_queries(response_content)
-        if queries:
-            existing_titles = {p.get("title", "").lower() for p in state.get("products", [])}
-            # If only one product, fetch up to 5; else, fetch only 1 per product
-            max_results = 5 if len(queries) == 1 else 1
-            for q in queries:
-                if q in existing_titles:
-                    continue
-                # with st.spinner(f"🛒 Searching offers for '{q}'"):
-                prod_results = get_products.invoke({"query": q, "max_results": max_results})
-                if isinstance(prod_results, list):
-                    products_store = state.setdefault("products", [])
-                    products_store.extend(prod_results)
-                    st.session_state.products.extend(prod_results)
-                    state["messages"].append(ToolMessage(
-                        content=json.dumps(prod_results),
-                        tool_call_id=f"auto_products_{q}"
-                    ))
-            if state.get("products"):
-                st.toast("Product offers updated!", icon="🛒")
-        
-    else:
-        # No tool calls, just add the response
-        response_content_raw = response.content
-        response_content = response_content_raw if isinstance(response_content_raw, str) else json.dumps(response_content_raw)
-        # Attach TL;DR summary to response
-        tldr_text = generate_tldr(response_content)
-        if tldr_text:
-            response_content = response_content + "\n\n**TL;DR:** " + tldr_text
-        state["messages"].append(AIMessage(content=response_content))
     
+    # Get final response after tool execution
+    final_response = llm_with_tools.invoke([sys_msg] + state["messages"])
+    response_content_raw = final_response.content
+    response_content = response_content_raw if isinstance(response_content_raw, str) else json.dumps(response_content_raw)
+    # Attach TL;DR summary to response
+    tldr_text = generate_tldr(response_content)
+    if tldr_text:
+        response_content = response_content + "\n\n**TL;DR:** " + tldr_text
+    
+    # Add final AI response to state
+    state["messages"].append(AIMessage(content=response_content))
+    
+    # -----------------------------
+    # Auto-fetch product offers mentioned in the reply
+    # -----------------------------
+    products = get_product_entities(response_content)
+
+    products = [p.get("product_name") for p in products]
+
+    print(products)
+
+    if products:
+
+        st.session_state.products = []
+        
+        # If only one product, fetch up to 5; else, fetch only 1 per product
+        max_results = 5 if len(products) == 1 else 1
+        for q in products:
+
+            # with st.spinner(f"🛒 Searching offers for '{q}'"):
+            prod_results = get_products_from_gshopping(q, max_results)
+            if isinstance(prod_results, list):
+                st.session_state.products.extend(prod_results)
+                state["messages"].append(ToolMessage(
+                    content=json.dumps(prod_results),
+                    tool_call_id=f"auto_products_{q}"
+                ))
+        if state.get("products"):
+            st.toast("Product offers updated!", icon=":material/local_mall:")
+        
+
     return response_content, state["content"]
 
 # Initialize session state
@@ -674,47 +656,73 @@ def update_user_preferences(user_query: str) -> None:
 # Helper: Extract product keywords from assistant reply
 # -------------------------------------------------
 
-def extract_product_queries(reply: str) -> List[str]:
-    """Use the LLM to identify product names/categories mentioned in a reply.
-
-    Returns a **deduplicated** list of product query strings. The prompt asks the
-    LLM to output ONLY a JSON array of strings, e.g. ["sony wh-1000xm5", "bose qc45"].
-    """
-    if not reply or not isinstance(reply, str):
-        return []
-
-    system_prompt = (
-        "You are an assistant that extracts PRODUCT NAMES OR CATEGORIES from the given assistant message. "
-        "Return ONLY a JSON array of strings, lower-case, no extra text. "
-        "Ignore general nouns that are not product specific. If none, return [] ."
-    )
-
-    llm = get_llm()
+def get_product_entities(response_text: str) -> List[dict]:
+    """Extract product entities from the LLM response."""
     try:
-        resp = llm.invoke([
+
+        
+        # Skip if response is empty or too short
+        if not response_text or len(response_text.strip()) < 10:
+            return []
+        
+        # Skip error messages
+        if any(error_indicator in response_text for error_indicator in ["🚫", "⚠️", "⏰", "⏱️", "Error"]):
+            return []
+        
+        system_prompt = """
+        You are an assistant that extracts product entities from shopping assistant responses.
+        Extract specific product names, brands, and categories mentioned in the text.
+        Return ONLY a JSON array of objects with this format:
+        [
+            {
+                "product_name": "Sony WH-1000XM4",
+                "brand": "Sony",
+            }
+        ]
+        
+        Only extract actual products that are specifically mentioned or recommended.
+        Do not extract generic terms or vague references.
+        If no specific products are found, return an empty array: []
+        """
+        
+        llm = get_llm()
+        extraction_response = llm.invoke([
             SystemMessage(content=system_prompt),
-            HumanMessage(content=reply),
+            HumanMessage(content=f"Extract product entities from this text:\n\n{response_text}")
         ])
-        txt = resp.content if isinstance(resp.content, str) else str(resp.content)
-        import json, re
-        if not txt.strip().startswith("["):
-            m = re.search(r"\[[\s\S]*\]", txt)
-            txt = m.group(0) if m else "[]"
-        products = json.loads(txt)
-        if isinstance(products, list):
-            # normalise & dedupe
-            clean = []
-            seen = set()
-            for p in products:
-                if isinstance(p, str):
-                    s = p.strip().lower()
-                    if s and s not in seen:
-                        clean.append(s)
-                        seen.add(s)
-            return clean
-    except Exception:
-        pass
-    return []
+        
+        # Parse the JSON response
+        txt_resp = extraction_response.content if isinstance(extraction_response.content, str) else str(extraction_response.content)
+        txt_resp = txt_resp.strip()
+
+        print(f"Extraction response: {extraction_response.content}")
+        
+        # Handle JSON extraction
+        import re, json
+        if not txt_resp.startswith("["):
+            match = re.search(r"\[[\s\S]*\]", txt_resp)
+            txt_resp = match.group(0) if match else "[]"
+        
+        product_entities = json.loads(txt_resp)
+        
+        # Validate the structure
+        if not isinstance(product_entities, list):
+            return []
+        
+        # Filter and validate each entity
+        valid_entities = []
+        for entity in product_entities:
+            if (isinstance(entity, dict) and 
+                entity.get("product_name") and 
+                entity.get("brand")):
+                valid_entities.append(entity)
+        
+        print(f"Valid entities: {valid_entities}")
+        return valid_entities
+        
+    except Exception as e:
+        # Silently fail and return empty list
+        return []
 
 def speech_to_text(audio_bytes):
     """Convert speech to text using Groq Speech API."""
