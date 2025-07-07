@@ -13,6 +13,9 @@ from main import SearchAPIResponse, RedditResult, fetch_reddit_post
 from shopping_cache import get_shopping_results
 from streamlit_product_card import product_card
 import streamlit.components.v1 as components
+from streamlit_mic_recorder import mic_recorder
+from groq import Groq
+import io
 # Load environment variables
 load_dotenv()
 
@@ -239,16 +242,16 @@ def generate_response(state: BotState, user_input: str) -> tuple[str, dict]:
             for q in queries:
                 if q in existing_titles:
                     continue
-                with st.spinner(f"🛒 Searching offers for '{q}'"):
-                    prod_results = get_products.invoke({"query": q, "max_results": max_results})
-                    if isinstance(prod_results, list):
-                        products_store = state.setdefault("products", [])
-                        products_store.extend(prod_results)
-                        st.session_state.products.extend(prod_results)
-                        state["messages"].append(ToolMessage(
-                            content=json.dumps(prod_results),
-                            tool_call_id=f"auto_products_{q}"
-                        ))
+                # with st.spinner(f"🛒 Searching offers for '{q}'"):
+                prod_results = get_products.invoke({"query": q, "max_results": max_results})
+                if isinstance(prod_results, list):
+                    products_store = state.setdefault("products", [])
+                    products_store.extend(prod_results)
+                    st.session_state.products.extend(prod_results)
+                    state["messages"].append(ToolMessage(
+                        content=json.dumps(prod_results),
+                        tool_call_id=f"auto_products_{q}"
+                    ))
             if state.get("products"):
                 st.toast("Product offers updated!", icon="🛒")
         
@@ -285,6 +288,13 @@ def initialize_session_state():
     # Add speech processing state
     if "processing_speech" not in st.session_state:
         st.session_state.processing_speech = False
+    if "is_recording" not in st.session_state:
+        st.session_state.is_recording = False
+    if "groq_client" not in st.session_state:
+        if os.getenv("GROQ_API_KEY"):
+            st.session_state.groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+        else:
+            st.session_state.groq_client = None
 
 # ------------------------------
 # Preference graph renderer
@@ -369,40 +379,6 @@ def inject_custom_css() -> None:
             max-height: 70vh;
             overflow-y: auto;
             padding-right: 0.5rem;
-        }
-        
-        /* Fixed mic button at bottom center */
-        .fixed-mic-button {
-            position: fixed;
-            bottom: 120px;
-            left: 50%;
-            transform: translateX(-50%);
-            z-index: 1000;
-            background: #ffffff;
-            border: 2px solid #e0e0e0;
-            border-radius: 50%;
-            width: 40px;
-            height: 40px;
-            cursor: pointer;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 18px;
-            color: #666666;
-            transition: all 0.3s ease;
-        }
-        
-        .fixed-mic-button:hover {
-            background: #ffffff;
-            border-color: #c12525;
-            color: #c12525;
-            transform: translateX(-50%) scale(1.1);
-            box-shadow: 0 6px 16px rgba(0,0,0,0.2);
-        }
-        
-        .fixed-mic-button:active {
-            transform: translateX(-50%) scale(0.95);
         }
         </style>
         """,
@@ -549,6 +525,47 @@ def main():
     with tab_prefs:
         render_preference_graph()
 
+    # Speech input processing
+    audio = mic_recorder(
+        start_prompt="🎤",
+        stop_prompt="⏹️",
+        just_once=True,
+        use_container_width=False,
+        format="webm",
+        key='speech_recorder'
+    )
+    
+    # Process speech input if available
+    if audio and not st.session_state.processing_speech:
+        transcribed_text = process_speech_input(audio)
+        if transcribed_text:
+            # Use transcribed text as prompt
+            prompt = transcribed_text
+            
+            # Display user message
+            with st.chat_message("user"):
+                st.markdown(f"{prompt}")
+            
+            # Generate and display assistant response
+            with st.chat_message("assistant"):
+                with st.spinner("Thinking..."):
+                    response_content, updated_content = generate_response(
+                        st.session_state.bot_state, 
+                        prompt
+                    )
+                    
+                    # Update session state
+                    st.session_state.messages = st.session_state.bot_state["messages"]
+                    st.session_state.content = updated_content
+                    
+                    # Update preference graph with the latest user query
+                    update_user_preferences(prompt)
+                    
+                    render_with_tldr(response_content)
+            
+            # Force rerun to update the chat
+            st.rerun()
+
     # Chat input
     if prompt := st.chat_input("What are you looking for today?"):
         # Display user message
@@ -575,13 +592,43 @@ def main():
         # Force rerun to update the chat
         st.rerun()
     
-    # Fixed mic button at bottom center of screen
+    # Position the mic recorder at bottom center
     st.markdown(
         """
-        <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
-        <button class="fixed-mic-button" onclick="alert('🎤 Voice input feature coming soon!')">
-            <span class="material-icons">mic</span>
-        </button>
+        <style>
+        /* Position the mic recorder at bottom center */
+        div[data-testid="stForm"]:has(iframe[title="mic_recorder"]) {
+            position: fixed !important;
+            bottom: 120px !important;
+            left: 50% !important;
+            transform: translateX(-50%) !important;
+            z-index: 1000 !important;
+            background: transparent !important;
+            border: none !important;
+            width: auto !important;
+        }
+        
+        /* Style the mic recorder component */
+        div[data-testid="stForm"] iframe[title="mic_recorder"] {
+            width: 50px !important;
+            height: 50px !important;
+            border-radius: 50% !important;
+        }
+        
+        /* Alternative selector for the mic recorder */
+        iframe[title="mic_recorder"] {
+            position: fixed !important;
+            bottom: 120px !important;
+            left: 50% !important;
+            transform: translateX(-50%) !important;
+            z-index: 1000 !important;
+            width: 50px !important;
+            height: 50px !important;
+            border-radius: 50% !important;
+            border: 2px solid #e0e0e0 !important;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15) !important;
+        }
+        </style>
         """,
         unsafe_allow_html=True,
     )
@@ -668,6 +715,47 @@ def extract_product_queries(reply: str) -> List[str]:
     except Exception:
         pass
     return []
+
+def speech_to_text(audio_bytes):
+    """Convert speech to text using Groq Speech API."""
+    if not st.session_state.groq_client:
+        st.error("Groq API not available. Please set GROQ_API_KEY environment variable.")
+        return None
+    
+    try:
+        # Create a BytesIO object from audio bytes
+        audio_bio = io.BytesIO(audio_bytes)
+        audio_bio.name = 'audio.webm'  # Set filename for Groq API
+        
+        # Use Groq's speech-to-text API
+        response = st.session_state.groq_client.audio.transcriptions.create(
+            model="whisper-large-v3-turbo",
+            file=audio_bio,
+            response_format="verbose_json"
+        )
+        return response.text
+    except Exception as e:
+        st.error(f"Error in speech-to-text: {e}")
+        return None
+
+def process_speech_input(audio_data):
+    """Process recorded audio and convert to text input."""
+    if not audio_data:
+        return None
+    
+    st.session_state.processing_speech = True
+    
+    with st.spinner("🔄 Converting speech to text..."):
+        # Convert speech to text
+        user_text = speech_to_text(audio_data['bytes'])
+        
+        if user_text:
+            st.session_state.processing_speech = False
+            return user_text
+        else:
+            st.error("Could not transcribe your speech. Please try again.")
+            st.session_state.processing_speech = False
+            return None
 
 def open_url(url: str):
     """Open a URL in a new browser tab from Streamlit callback."""
