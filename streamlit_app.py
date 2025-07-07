@@ -10,7 +10,6 @@ import os
 from dotenv import load_dotenv
 from search_cache import get_search_results  # Local caching
 from main import SearchAPIResponse, RedditResult, fetch_reddit_post
-
 # Load environment variables
 load_dotenv()
 
@@ -251,14 +250,46 @@ def render_with_tldr(text: str) -> None:
     else:
         st.markdown(text)
 
+def inject_custom_css() -> None:
+    """Inject CSS to make tab headers sticky and tab panels scrollable."""
+    st.markdown(
+        """
+        <style>
+        /* Make tab headers sticky */
+        div[data-baseweb="tabs"] > div:first-child {
+            position: sticky;
+            top: 0;
+            background: var(--background-color, #ffffff);
+            z-index: 998;
+        }
+        /* Scrollable tab panels (chat, posts, prefs) */
+        div[data-baseweb="tab-panel"] {
+            max-height: 80vh;
+            overflow-y: auto;
+        }
+
+        /* Scrollable chat area */
+        .chat-scroll {
+            max-height: 70vh;
+            overflow-y: auto;
+            padding-right: 0.5rem;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
 def main():
     st.set_page_config(
         page_title="Suvidha - Shopping Assistant",
-        page_icon="🛒",
+        page_icon=":material/support_agent:",
         layout="wide"
     )
     
-    st.title("🛒 Suvidha - Shopping Assistant")
+    # Inject custom CSS for layout tweaks
+    inject_custom_css()
+    
+    st.title(":material/support_agent: Suvidha - Shopping Assistant")
     st.markdown("Get personalized product recommendations based on Reddit discussions!")
     
     # Initialize session state
@@ -266,12 +297,8 @@ def main():
     
     # Sidebar for content information
     with st.sidebar:
-        st.header("📊 Session Info")
-        st.write(f"**Messages:** {len(st.session_state.messages)}")
-        st.write(f"**Content Items:** {len(st.session_state.content) if st.session_state.content else 0}")
-        
         if st.session_state.content:
-            st.subheader("🔍 Current Context")
+            st.subheader(":material/search: Current Context")
             st.write(f"**Total Posts:** {len(st.session_state.content)}")
             total_comments = sum(len(item.get('comments', [])) for item in st.session_state.content if isinstance(item, dict) and 'comments' in item)
             st.write(f"**Total Comments:** {total_comments}")
@@ -294,7 +321,7 @@ def main():
                 st.write(f"... and {len(valid_posts) - 3} more posts")
         
         # Clear chat button
-        if st.button("🗑️ Clear Chat"):
+        if st.button(":material/delete: Clear Chat"):
             st.session_state.messages = [AIMessage(content=WELCOME_MSG)]
             st.session_state.content = {}
             st.session_state.bot_state = {
@@ -304,45 +331,55 @@ def main():
             st.rerun()
 
     # Always show tabs for better organization
-    tab1, tab2, tab3 = st.tabs(["💬 Chat", "📰 Reddit Posts", "🧠 Preferences"])
+    tab1, tab2, tab3 = st.tabs([":material/chat: Chat", ":material/newspaper: Reddit Posts", ":material/neurology: Preferences"])
     
     with tab1:
-        # Render chat history
-        for msg in st.session_state.messages:
-            if isinstance(msg, AIMessage):
-                if msg.content and str(msg.content).strip():
-                    with st.chat_message("assistant"):
-                        render_with_tldr(str(msg.content))
-            elif isinstance(msg, HumanMessage):
-                with st.chat_message("user"):
-                    st.markdown(msg.content)
+        # Render chat history inside scrollable area (about 70% of viewport)
+        with st.container(height=0):  # placeholder to attach CSS class
+            st.markdown(
+                """
+                <div class="chat-scroll">
+                """,
+                unsafe_allow_html=True,
+            )
+            for msg in st.session_state.messages:
+                if isinstance(msg, AIMessage):
+                    if msg.content and str(msg.content).strip():
+                        with st.chat_message("assistant"):
+                            render_with_tldr(str(msg.content))
+                elif isinstance(msg, HumanMessage):
+                    with st.chat_message("user"):
+                        st.markdown(msg.content)
+            st.markdown("</div>", unsafe_allow_html=True)
     
     with tab2:
         if st.session_state.content:
             valid_posts = [item for item in st.session_state.content if isinstance(item, dict) and 'title' in item]
             st.write(f"Found {len(valid_posts)} relevant Reddit posts:")
             
-            for i, post in enumerate(valid_posts):
-                with st.expander(f"📝 {post.get('title', 'Unknown Title')}", expanded=i==0):
-                    col1, col2 = st.columns([3, 1])
-                    
-                    with col1:
-                        st.write(f"**Description:** {post.get('description', 'No description available')}")
-                        st.write(f"**Link:** [{post.get('link', '#')}]({post.get('link', '#')})")
-                    
-                    with col2:
-                        st.metric("Comments", len(post.get('comments', [])))
-                    
-                    if post.get('comments'):
-                        st.write("**Top Comments:**")
-                        for j, comment in enumerate(post['comments'][:3]):  # Show top 3 comments
-                            with st.container():
-                                st.write(f"👤 **{comment.get('author', 'Unknown')}** (Score: {comment.get('score', 0)})")
-                                st.write(f"💬 {comment.get('body', 'No content')}")
-                                if j < len(post['comments'][:3]) - 1:
-                                    st.divider()
+            # Wrap posts list in a scrollable container – mirrors chat scrolling behaviour
+            with st.container(height=600):
+                for i, post in enumerate(valid_posts):
+                    with st.expander(f":material/article: {post.get('title', 'Unknown Title')}", expanded=i==0):
+                        col1, col2 = st.columns([3, 1])
+                        
+                        with col1:
+                            st.write(f"**Description:** {post.get('description', 'No description available')}")
+                            st.write(f"**Link:** [{post.get('link', '#')}]({post.get('link', '#')})")
+                        
+                        with col2:
+                            st.metric("Comments", len(post.get('comments', [])))
+                        
+                        if post.get('comments'):
+                            st.write("**Top Comments:**")
+                            for j, comment in enumerate(post['comments'][:3]):  # Show top 3 comments
+                                with st.container():
+                                    st.write(f":material/person: **{comment.get('author', 'Unknown')}** (Score: {comment.get('score', 0)})")
+                                    st.write(f":material/chat: {comment.get('body', 'No content')}")
+                                    if j < len(post['comments'][:3]) - 1:
+                                        st.divider()
         else:
-            st.info("🔍 **No Reddit posts found yet**")
+            st.info(":material/search: **No Reddit posts found yet**")
             st.markdown("Ask questions about products and I'll search Reddit for relevant discussions and reviews!")
             st.markdown("**Try asking about:**")
             st.markdown("- 'Best wireless headphones under $200'")
