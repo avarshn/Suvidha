@@ -14,6 +14,8 @@ import requests
 import os
 from fake_useragent import UserAgent
 
+from serpapi import GoogleSearch
+
 CACHE_FILE: Path = Path("search_cache.json")
 
 # Configure basic logging
@@ -98,8 +100,9 @@ def get_shopping_results_from_serpapi(query: str, api_key: str, **kwargs) -> Dic
 
 
 def _fetch_shopping_from_searchapi(query: str, api_key: str, **kwargs) -> Dict[str, Any]:
-    """Call SearchApi.io Google Shopping API and return parsed JSON response."""
-    url = "https://www.searchapi.io/api/v1/search"
+    """Call SERP Google Shopping API and return parsed JSON response."""
+    
+    url = "https://serpapi.com/search" #"https://www.searchapi.io/api/v1/search"
     params = {
         "engine": "google_shopping",
         "q": query,
@@ -116,18 +119,23 @@ def _fetch_shopping_from_searchapi(query: str, api_key: str, **kwargs) -> Dict[s
             params[param] = kwargs[param]
     
     
-    session = requests.session()
-    session.proxies = {}
-    session.proxies["http"] = "socks5h://localhost:9150"
-    session.proxies["https"] = "socks5h://localhost:9150"
-    # Update only the User-Agent header
-    session.headers.update(
-        {"User-Agent": UserAgent().random}
-    )  # Empty User-Agent or any custom value
+    # session = requests.session()
+    # session.proxies = {}
+    # session.proxies["http"] = "socks5h://localhost:9150"
+    # session.proxies["https"] = "socks5h://localhost:9150"
+    # # Update only the User-Agent header
+    # session.headers.update(
+    #     {"User-Agent": UserAgent().random}
+    # )  # Empty User-Agent or any custom value
 
-    response = session.get(url, params=params, timeout=15)
-    response.raise_for_status()
-    return response.json()
+    # response = session.get(url, params=params, timeout=15)
+
+    search = GoogleSearch(params)
+    results = search.get_dict()
+    print(results)
+    # shopping_results = results["shopping_results"]
+    # response.raise_for_status()
+    return results
 
 def get_shopping_results(product_list: List[dict]) -> Dict[str, Any]:
 
