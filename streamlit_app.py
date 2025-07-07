@@ -127,12 +127,13 @@ def generate_response(state: BotState, user_input: str) -> tuple[str, dict]:
         return err_msg, state["content"]
     
     # Handle tool calls
-    if response.tool_calls:
+    tool_calls = getattr(response, "tool_calls", [])
+    if tool_calls:
         # Add the AI message with tool calls
         state["messages"].append(response)
         
         # Process each tool call
-        for tool_call in response.tool_calls:
+        for tool_call in tool_calls:
             if tool_call["name"] == "get_content":
                 # Show spinner while fetching content
                 with st.spinner(f"Fetching product information for: {tool_call['args']['query']}"):
@@ -153,14 +154,24 @@ def generate_response(state: BotState, user_input: str) -> tuple[str, dict]:
         
         # Get final response after tool execution
         final_response = llm_with_tools.invoke([sys_msg] + state["messages"])
-        response_content = final_response.content
+        response_content_raw = final_response.content
+        response_content = response_content_raw if isinstance(response_content_raw, str) else json.dumps(response_content_raw)
+        # Attach TL;DR summary to response
+        tldr_text = generate_tldr(response_content)
+        if tldr_text:
+            response_content = response_content + "\n\n**TL;DR:** " + tldr_text
         
         # Add final AI response to state
         state["messages"].append(AIMessage(content=response_content))
         
     else:
         # No tool calls, just add the response
-        response_content = response.content
+        response_content_raw = response.content
+        response_content = response_content_raw if isinstance(response_content_raw, str) else json.dumps(response_content_raw)
+        # Attach TL;DR summary to response
+        tldr_text = generate_tldr(response_content)
+        if tldr_text:
+            response_content = response_content + "\n\n**TL;DR:** " + tldr_text
         state["messages"].append(AIMessage(content=response_content))
     
     return response_content, state["content"]
@@ -202,6 +213,43 @@ def render_preference_graph() -> None:
         dot.append(f'  User -> "{safe}" [label="{w}"];')
     dot.append("}")
     st.graphviz_chart("\n".join(dot))
+
+# ------------------------------
+# TL;DR generator
+# ------------------------------
+
+def generate_tldr(text: str) -> str:
+    """Generate a concise (1-2 sentence) TL;DR for a given text using the LLM."""
+    if not text or not isinstance(text, str):
+        return ""
+
+    llm = get_llm()
+    try:
+        summary_prompt = (
+            "You are an assistant that summarises a response in 1-2 short sentences as a TL;DR. "
+            "Return ONLY the TL;DR without any extra headings or formatting."
+        )
+        resp = llm.invoke([
+            SystemMessage(content=summary_prompt),
+            HumanMessage(content=text),
+        ])
+        tl = resp.content if isinstance(resp.content, str) else str(resp.content)
+        return tl.strip()
+    except Exception:
+        # If summarisation fails, silently skip TL;DR
+        return ""
+
+def render_with_tldr(text: str) -> None:
+    """Render assistant message with TL;DR inside an expander if present."""
+    if not text:
+        return
+    if "**TL;DR:**" in text:
+        main_text, tldr_part = text.split("**TL;DR:**", 1)
+        st.markdown(main_text.strip())
+        with st.expander("TL;DR"):
+            st.markdown(tldr_part.strip())
+    else:
+        st.markdown(text)
 
 def main():
     st.set_page_config(
@@ -264,7 +312,7 @@ def main():
             if isinstance(msg, AIMessage):
                 if msg.content and str(msg.content).strip():
                     with st.chat_message("assistant"):
-                        st.markdown(msg.content)
+                        render_with_tldr(str(msg.content))
             elif isinstance(msg, HumanMessage):
                 with st.chat_message("user"):
                     st.markdown(msg.content)
@@ -325,7 +373,7 @@ def main():
                 # Update preference graph with the latest user query
                 update_user_preferences(prompt)
                 
-                st.markdown(response_content)
+                render_with_tldr(response_content)
         
         # Force rerun to update the chat
         st.rerun()
