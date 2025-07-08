@@ -95,9 +95,8 @@ def get_content(query: str) -> List[dict]:
         logging.info(f"Reddit SERP: {reddit_serp}")
         # Transform into structured objects
         search_response = SearchAPIResponse.from_json(reddit_serp)
+        reddit_results = search_response.reddit_results[:5]
 
-        logging.info(f"Search Response: {search_response}")
-        reddit_results = search_response.reddit_results
 
         logging.info(f"Reddit Results: {reddit_results}")
 
@@ -106,6 +105,7 @@ def get_content(query: str) -> List[dict]:
         for reddit_result in reddit_results:
             # Fetch post metadata and top-level comments
             try:
+
                 logging.info(f"each reddit_result: {reddit_result}")
                 post = fetch_reddit_post(reddit_result.link)
                 product_data.append({
@@ -124,6 +124,7 @@ def get_content(query: str) -> List[dict]:
                     "source": "reddit",
                 })
             except Exception:
+
                 logging.info(f"error in getting attributes from reddit posts")
                 # Skip individual post failures without aborting entire run
                 continue
