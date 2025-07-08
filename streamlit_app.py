@@ -106,6 +106,7 @@ def get_content(query: str) -> List[dict]:
         for reddit_result in reddit_results:
             # Fetch post metadata and top-level comments
             try:
+                logging.info(f"each reddit_result: {reddit_result}")
                 post = fetch_reddit_post(reddit_result.link)
                 product_data.append({
                     "title": post.title,
@@ -123,9 +124,11 @@ def get_content(query: str) -> List[dict]:
                     "source": "reddit",
                 })
             except Exception:
+                logging.info(f"error in getting attributes from reddit posts")
                 # Skip individual post failures without aborting entire run
                 continue
-
+        logging.info(f"product_data: {product_data}")
+        
         # Return ONLY Reddit-based product discussion data
         return product_data
     except Exception as e:
