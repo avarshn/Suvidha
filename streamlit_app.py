@@ -90,7 +90,11 @@ def get_content(query: str) -> List[dict]:
 
         # Transform into structured objects
         search_response = SearchAPIResponse.from_json(reddit_serp)
+
+        logging.info(f"Search Response: {search_response}")
         reddit_results = search_response.reddit_results
+
+        logging.info(f"Reddit Results: {reddit_results}")
 
         product_data: List[dict] = []
 
