@@ -40,6 +40,7 @@ def _fetch_from_api(query: str, api_key: str, engine: str = "google") -> Dict[st
     url = "https://www.searchapi.io/api/v1/search"
     params = {"engine": engine, "q": query, "api_key": api_key}
     response = requests.get(url, params=params, timeout=10)
+    print("Response: ", response) 
     response.raise_for_status()
     return response.json()
 
