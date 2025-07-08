@@ -5,6 +5,10 @@ from dotenv import load_dotenv
 from dataclasses import dataclass, asdict
 from typing import List, Dict, Any, Optional
 from search_cache import get_search_results  # Local caching
+import logging
+
+# Configure basic logging
+logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 
 
 def search_google(query: str, api_key: str, engine: str = "google") -> dict:
@@ -100,8 +104,11 @@ def fetch_reddit_post(
     json_url = post_url.rstrip("/") + ".json"
     headers = {"User-Agent": "python:reddit.comment.fetch:v0.1 (by /u/anon)"}
     response = requests.get(json_url, headers=headers, timeout=10)
+    logging.info(f"response from reddit post: {response}")
     response.raise_for_status()
     data = response.json()
+
+    logging.info(f"Data from reddit post: {data}")
 
     # Post meta information is in the first element
     post_data = data[0]["data"]["children"][0]["data"]
