@@ -149,7 +149,6 @@ def get_products_from_gshopping(query: str, max_results: int = 1) -> List[dict]:
                 "price": item.get("price"),
                 "rating": item.get("rating"),
                 "product_image": item.get("thumbnail") or item.get("image"),
-                "source": "google_shopping",
             })
         return product_list
     except Exception as exc:
@@ -294,21 +293,34 @@ def render_preference_graph() -> None:
     nodes = []
     edges = []
     
-    # Create the central User node
+    # Create the central User node positioned at the center
     nodes.append(Node(id="User", 
                      label="User", 
                      size=30, 
                      shape="dot",
-                     color="#87CEEB"))  # Light blue
+                     color="#87CEEB",  # Light blue
+                     x=300,  # Center position
+                     y=300))
     
     # Create nodes for each preference and edges from User to preferences
-    for k, w in sorted(prefs.items(), key=lambda x: -x[1])[:25]:  # Top 25 preferences
+    import math
+    preferences = sorted(prefs.items(), key=lambda x: -x[1])[:25]  # Top 25 preferences
+    num_prefs = len(preferences)
+    
+    for i, (k, w) in enumerate(preferences):
+        # Calculate position in a circle around the center
+        angle = (2 * math.pi * i) / num_prefs
+        radius = 50  # Distance from center
+        x = radius * math.cos(angle)
+        y = radius * math.sin(angle)
+        
         # Preference node
         nodes.append(Node(id=k,
                          label=k,
                          size=15 + (w * 3),  # Size based on weight
                          shape="box",
-                         color="#FFFFE0"))  # Light yellow
+                         color="#FFFFE0",  # Light yellow
+                         ))
         
         # Edge from User to preference with weight as label
         edges.append(Edge(source="User",
@@ -316,20 +328,28 @@ def render_preference_graph() -> None:
                          label=str(w),
                          color="#808080"))  # Gray
 
-    # Configure the graph to fill the tab view
-    config = Config(width="100%",
-                    height=800,
-                    directed=True, 
-                    physics=True, 
-                    hierarchical=False,
-                    nodeHighlightBehavior=True,
-                    highlightColor="#F7A7A6",
-                    collapsible=False)
+    # Center the graph with moderate height
+    col1, col2, col3 = st.columns([1, 3, 1])
+    with col2:
+        config = Config(width=750,
+                        height=500,
+                        directed=True, 
+                        physics=True, 
+                        hierarchical=False,
+                        nodeHighlightBehavior=False,
+                        highlightColor="#F7A7A6",
+                        collapsible=False,
+                        initialZoom=1.5,
+                        fit=True,
+                        dragNodes=False,
+                        dragView=False,
+                        zoomView=False,
+                        selectConnectedEdges=False)
 
-    # Render the graph
-    return_value = agraph(nodes=nodes, 
-                          edges=edges, 
-                          config=config)
+        # Render the graph
+        return_value = agraph(nodes=nodes, 
+                              edges=edges, 
+                              config=config)
 
 # ------------------------------
 # TL;DR generator
@@ -371,12 +391,7 @@ TLDR (2 lines):"""
     
     except Exception as e:
         # Return a fallback TLDR if API fails
-        if "headphone" in response_content.lower():
-            return "Headphone recommendations found.\nBased on Reddit user discussions."
-        elif "laptop" in response_content.lower():
-            return "Laptop recommendations found.\nBased on Reddit user discussions."
-        else:
-            return "Product recommendations summary.\nBased on Reddit user discussions."
+        return "Product recommendations summary.\nBased on Reddit user discussions."
 
 def render_with_tldr(text: str, tldr_text: str = None) -> None:
     """Render assistant message with TL;DR inside an expander if present."""
@@ -604,7 +619,7 @@ def main():
                 st.write(f"Found {len(reddit_posts)} relevant Reddit posts:")
                 with st.container(height=600):
                     for i, post in enumerate(reddit_posts):
-                        with st.expander(f":material/article: {post.get('title', 'Unknown Title')}", expanded=i==0):
+                        with st.expander(f":material/article: {post.get('title', 'Unknown Title')}", expanded=False):
                             col1, col2 = st.columns([3, 1])
 
                             with col1:
