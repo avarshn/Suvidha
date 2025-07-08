@@ -22,3 +22,4 @@ streamlit-product-card
 google-search-results
 serpapi
 streamlit-agraph
+praw

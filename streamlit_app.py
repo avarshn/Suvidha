@@ -90,13 +90,14 @@ def get_content(query: str) -> List[dict]:
 
         # Transform into structured objects
         search_response = SearchAPIResponse.from_json(reddit_serp)
-        reddit_results = search_response.reddit_results
+        reddit_results = search_response.reddit_results[:5]
 
         product_data: List[dict] = []
 
         for reddit_result in reddit_results:
             # Fetch post metadata and top-level comments
             try:
+                print(reddit_result)
                 post = fetch_reddit_post(reddit_result.link)
                 product_data.append({
                     "title": post.title,
@@ -114,6 +115,7 @@ def get_content(query: str) -> List[dict]:
                     "source": "reddit",
                 })
             except Exception:
+                print(f"Error fetching post: {reddit_result.link}")
                 # Skip individual post failures without aborting entire run
                 continue
 
