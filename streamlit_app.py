@@ -17,8 +17,12 @@ from streamlit_mic_recorder import mic_recorder
 from streamlit_agraph import agraph, Node, Edge, Config
 from groq import Groq
 import io
+import logging
 # Load environment variables
 load_dotenv()
+
+# Configure basic logging
+logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 
 
 # Initialize LLM with tools bound
@@ -88,16 +92,21 @@ def get_content(query: str) -> List[dict]:
         # -----------------------------
         reddit_serp = get_search_results(reddit_query, api_key=api_key)
 
+        logging.info(f"Reddit SERP: {reddit_serp}")
         # Transform into structured objects
         search_response = SearchAPIResponse.from_json(reddit_serp)
         reddit_results = search_response.reddit_results[:5]
+
+
+        logging.info(f"Reddit Results: {reddit_results}")
 
         product_data: List[dict] = []
 
         for reddit_result in reddit_results:
             # Fetch post metadata and top-level comments
             try:
-                print(reddit_result)
+
+                logging.info(f"each reddit_result: {reddit_result}")
                 post = fetch_reddit_post(reddit_result.link)
                 product_data.append({
                     "title": post.title,
@@ -115,10 +124,12 @@ def get_content(query: str) -> List[dict]:
                     "source": "reddit",
                 })
             except Exception:
-                print(f"Error fetching post: {reddit_result.link}")
+
+                logging.info(f"error in getting attributes from reddit posts")
                 # Skip individual post failures without aborting entire run
                 continue
-
+        logging.info(f"product_data: {product_data}")
+        
         # Return ONLY Reddit-based product discussion data
         return product_data
     except Exception as e:
