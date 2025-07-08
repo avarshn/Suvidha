@@ -44,6 +44,9 @@ def _fetch_from_api(query: str, api_key: str, engine: str = "google_shopping") -
         "engine": engine,
         "q": query,
         "api_key": api_key,
+        "gl": "us",
+        "hl": "en",
+        "num": 5,
     }
 
     search = GoogleSearch(params)

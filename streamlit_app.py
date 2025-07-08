@@ -14,6 +14,7 @@ from shopping_cache import get_shopping_results
 from streamlit_product_card import product_card
 import streamlit.components.v1 as components
 from streamlit_mic_recorder import mic_recorder
+from streamlit_agraph import agraph, Node, Edge, Config
 from groq import Groq
 import io
 # Load environment variables
@@ -284,23 +285,51 @@ def initialize_session_state():
 # ------------------------------
 
 def render_preference_graph() -> None:
-    """Display the user preference graph as a Graphviz chart."""
+    """Display the user preference graph as an interactive agraph chart."""
     prefs: dict[str, int] = st.session_state.get("user_preferences", {})
     if not prefs:
         st.info("No preferences detected yet – chat to build the graph.")
         return
 
-    dot = [
-        "digraph Preferences {",
-        "  rankdir=LR;",
-        "  User [shape=ellipse, style=filled, color=lightblue];",
-    ]
-    for k, w in sorted(prefs.items(), key=lambda x: -x[1])[:25]:
-        safe = k.replace("\"", "\\\"")
-        dot.append(f'  "{safe}" [shape=box, style=filled, color=lightyellow];')
-        dot.append(f'  User -> "{safe}" [label="{w}"];')
-    dot.append("}")
-    st.graphviz_chart("\n".join(dot))
+    nodes = []
+    edges = []
+    
+    # Create the central User node
+    nodes.append(Node(id="User", 
+                     label="User", 
+                     size=30, 
+                     shape="dot",
+                     color="#87CEEB"))  # Light blue
+    
+    # Create nodes for each preference and edges from User to preferences
+    for k, w in sorted(prefs.items(), key=lambda x: -x[1])[:25]:  # Top 25 preferences
+        # Preference node
+        nodes.append(Node(id=k,
+                         label=k,
+                         size=15 + (w * 3),  # Size based on weight
+                         shape="box",
+                         color="#FFFFE0"))  # Light yellow
+        
+        # Edge from User to preference with weight as label
+        edges.append(Edge(source="User",
+                         target=k,
+                         label=str(w),
+                         color="#808080"))  # Gray
+
+    # Configure the graph to fill the tab view
+    config = Config(width="100%",
+                    height=800,
+                    directed=True, 
+                    physics=True, 
+                    hierarchical=False,
+                    nodeHighlightBehavior=True,
+                    highlightColor="#F7A7A6",
+                    collapsible=False)
+
+    # Render the graph
+    return_value = agraph(nodes=nodes, 
+                          edges=edges, 
+                          config=config)
 
 # ------------------------------
 # TL;DR generator
@@ -476,6 +505,73 @@ def main():
                     with st.chat_message("user"):
                         st.markdown(msg.content)
             st.markdown("</div>", unsafe_allow_html=True)
+        
+        # Speech input processing (only in chat tab)
+        audio = mic_recorder(
+            start_prompt="🎤",
+            stop_prompt="⏹️",
+            just_once=True,
+            use_container_width=False,
+            format="webm",
+            key='speech_recorder'
+        )
+        
+        # Process speech input if available
+        if audio and not st.session_state.processing_speech:
+            transcribed_text = process_speech_input(audio)
+            if transcribed_text:
+                # Use transcribed text as prompt
+                prompt = transcribed_text
+                
+                # Display user message
+                with st.chat_message("user"):
+                    st.markdown(f"{prompt}")
+                
+                # Generate and display assistant response
+                with st.chat_message("assistant"):
+                    with st.spinner("Thinking..."):
+                        response_content, updated_content, tldr_text = generate_response(
+                            st.session_state.bot_state, 
+                            prompt
+                        )
+                        
+                        # Update session state
+                        st.session_state.messages = st.session_state.bot_state["messages"]
+                        st.session_state.content = updated_content
+                        
+                        # Update preference graph with the latest user query
+                        update_user_preferences(prompt)
+                        
+                        render_with_tldr(response_content, tldr_text)
+                
+                # Force rerun to update the chat
+                st.rerun()
+
+        # Chat input (only in chat tab)
+        if prompt := st.chat_input("What are you looking for today?"):
+            # Display user message
+            with st.chat_message("user"):
+                st.markdown(prompt)
+            
+            # Generate and display assistant response
+            with st.chat_message("assistant"):
+                with st.spinner("Thinking..."):
+                    response_content, updated_content, tldr_text = generate_response(
+                        st.session_state.bot_state, 
+                        prompt
+                    )
+                    
+                    # Update session state
+                    st.session_state.messages = st.session_state.bot_state["messages"]
+                    st.session_state.content = updated_content
+                    
+                    # Update preference graph with the latest user query
+                    update_user_preferences(prompt)
+                    
+                    render_with_tldr(response_content, tldr_text)
+            
+            # Force rerun to update the chat
+            st.rerun()
     
     with tab_products:
         products = st.session_state.products
@@ -533,113 +629,8 @@ def main():
     with tab_prefs:
         render_preference_graph()
 
-    # Speech input processing
-    audio = mic_recorder(
-        start_prompt="🎤",
-        stop_prompt="⏹️",
-        just_once=True,
-        use_container_width=False,
-        format="webm",
-        key='speech_recorder'
-    )
-    
-    # Process speech input if available
-    if audio and not st.session_state.processing_speech:
-        transcribed_text = process_speech_input(audio)
-        if transcribed_text:
-            # Use transcribed text as prompt
-            prompt = transcribed_text
-            
-            # Display user message
-            with st.chat_message("user"):
-                st.markdown(f"{prompt}")
-            
-            # Generate and display assistant response
-            with st.chat_message("assistant"):
-                with st.spinner("Thinking..."):
-                    response_content, updated_content, tldr_text = generate_response(
-                        st.session_state.bot_state, 
-                        prompt
-                    )
-                    
-                    # Update session state
-                    st.session_state.messages = st.session_state.bot_state["messages"]
-                    st.session_state.content = updated_content
-                    
-                    # Update preference graph with the latest user query
-                    update_user_preferences(prompt)
-                    
-                    render_with_tldr(response_content, tldr_text)
-            
-            # Force rerun to update the chat
-            st.rerun()
 
-    # Chat input
-    if prompt := st.chat_input("What are you looking for today?"):
-        # Display user message
-        with st.chat_message("user"):
-            st.markdown(prompt)
-        
-        # Generate and display assistant response
-        with st.chat_message("assistant"):
-            with st.spinner("Thinking..."):
-                response_content, updated_content, tldr_text = generate_response(
-                    st.session_state.bot_state, 
-                    prompt
-                )
-                
-                # Update session state
-                st.session_state.messages = st.session_state.bot_state["messages"]
-                st.session_state.content = updated_content
-                
-                # Update preference graph with the latest user query
-                update_user_preferences(prompt)
-                
-                render_with_tldr(response_content, tldr_text)
-        
-        # Force rerun to update the chat
-        st.rerun()
-    
-    # Position the mic recorder at bottom center
-    st.markdown(
-        """
-        <style>
-        /* Position the mic recorder at bottom center */
-        div[data-testid="stForm"]:has(iframe[title="mic_recorder"]) {
-            position: fixed !important;
-            bottom: 120px !important;
-            left: 50% !important;
-            transform: translateX(-50%) !important;
-            z-index: 1000 !important;
-            background: transparent !important;
-            border: none !important;
-            width: auto !important;
-        }
-        
-        /* Style the mic recorder component */
-        div[data-testid="stForm"] iframe[title="mic_recorder"] {
-            width: 50px !important;
-            height: 50px !important;
-            border-radius: 50% !important;
-        }
-        
-        /* Alternative selector for the mic recorder */
-        iframe[title="mic_recorder"] {
-            position: fixed !important;
-            bottom: 120px !important;
-            left: 50% !important;
-            transform: translateX(-50%) !important;
-            z-index: 1000 !important;
-            width: 50px !important;
-            height: 50px !important;
-            border-radius: 50% !important;
-            border: 2px solid #e0e0e0 !important;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.15) !important;
-        }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
+
 
 def update_user_preferences(user_query: str) -> None:
     """Extract preferences from the latest user query via the LLM and merge into the graph."""
