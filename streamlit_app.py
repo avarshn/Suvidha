@@ -17,8 +17,12 @@ from streamlit_mic_recorder import mic_recorder
 from streamlit_agraph import agraph, Node, Edge, Config
 from groq import Groq
 import io
+import logging
 # Load environment variables
 load_dotenv()
+
+# Configure basic logging
+logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 
 
 # Initialize LLM with tools bound
