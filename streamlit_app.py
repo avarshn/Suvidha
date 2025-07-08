@@ -88,6 +88,7 @@ def get_content(query: str) -> List[dict]:
         # -----------------------------
         reddit_serp = get_search_results(reddit_query, api_key=api_key)
 
+        logging.info(f"Reddit SERP: {reddit_serp}")
         # Transform into structured objects
         search_response = SearchAPIResponse.from_json(reddit_serp)
 
