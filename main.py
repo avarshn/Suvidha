@@ -5,6 +5,12 @@ from dotenv import load_dotenv
 from dataclasses import dataclass, asdict
 from typing import List, Dict, Any, Optional
 from search_cache import get_search_results  # Local caching
+import praw
+import re
+import logging
+
+# Configure basic logging
+logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 
 
 def search_google(query: str, api_key: str, engine: str = "google") -> dict:
@@ -90,18 +96,118 @@ class RedditPost:
     comments: List[RedditComment]
 
 
+def get_reddit_instance() -> praw.Reddit:
+    """Create and return a Reddit API instance using environment variables."""
+    load_dotenv()
+    
+    reddit_client_id = os.getenv("REDDIT_CLIENT_ID")
+    reddit_client_secret = os.getenv("REDDIT_CLIENT_SECRET")
+    reddit_user_agent = os.getenv("REDDIT_USER_AGENT", "python:suvidha.shopping.assistant:v1.0 (by /u/suvidha_bot)")
+    
+    if not reddit_client_id or not reddit_client_secret:
+        raise EnvironmentError(
+            "REDDIT_CLIENT_ID and REDDIT_CLIENT_SECRET must be set in environment variables. "
+            "Get these from https://www.reddit.com/prefs/apps/"
+        )
+    
+    return praw.Reddit(
+        client_id=reddit_client_id,
+        client_secret=reddit_client_secret,
+        user_agent=reddit_user_agent,
+        check_for_async=False
+    )
+
+def extract_post_id_from_url(post_url: str) -> str:
+    """Extract Reddit post ID from various Reddit URL formats."""
+    # Handle different Reddit URL formats
+    patterns = [
+        r'/comments/([a-zA-Z0-9]+)/',  # Standard format
+        r'/r/[^/]+/comments/([a-zA-Z0-9]+)/',  # With subreddit
+        r'reddit\.com/([a-zA-Z0-9]+)/?$',  # Short format
+    ]
+    
+    for pattern in patterns:
+        match = re.search(pattern, post_url)
+        if match:
+            return match.group(1)
+    
+    raise ValueError(f"Could not extract post ID from URL: {post_url}")
+
 def fetch_reddit_post(
     post_url: str, limit: Optional[int] = None
 ) -> RedditPost:
-    """Fetch Reddit post metadata and top-level comments.
+    """Fetch Reddit post metadata and top-level comments using Reddit Official API.
 
     Nested comment threads are ignored; only first-level comments are returned.
     """
+    try:
+        reddit = get_reddit_instance()
+        post_id = extract_post_id_from_url(post_url)
+        
+        # Fetch the submission
+        submission = reddit.submission(id=post_id)
+        
+        # Get post metadata
+        title = submission.title
+        description = submission.selftext if hasattr(submission, 'selftext') else ""
+        
+        # Get top-level comments
+        submission.comments.replace_more(limit=0)  # Remove "more comments" placeholders
+        comments: List[RedditComment] = []
+        
+        for comment in submission.comments:
+            if hasattr(comment, 'body') and hasattr(comment, 'author'):
+                # Skip deleted comments
+                if comment.body in ['[deleted]', '[removed]'] or not comment.author:
+                    continue
+                    
+                comments.append(
+                    RedditComment(
+                        id=comment.id,
+                        author=str(comment.author) if comment.author else "[deleted]",
+                        body=comment.body,
+                        score=comment.score,
+                        created_utc=int(comment.created_utc),
+                        depth=0,
+                    )
+                )
+                
+                if limit is not None and len(comments) >= limit:
+                    break
+        
+        return RedditPost(
+            title=title, 
+            description=description, 
+            link=post_url, 
+            comments=comments
+        )
+        
+    except Exception as e:
+        # Fallback to the old method if Reddit API fails
+        print(f"Reddit API failed for {post_url}, falling back to direct method: {e}")
+        return fetch_reddit_post_fallback(post_url, limit)
+
+def fetch_reddit_post_fallback(
+    post_url: str, limit: Optional[int] = None
+) -> RedditPost:
+    """Fallback method using direct JSON endpoint access."""
     json_url = post_url.rstrip("/") + ".json"
-    headers = {"User-Agent": "python:reddit.comment.fetch:v0.1 (by /u/anon)"}
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+        "Accept": "application/json",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate, br",
+        "DNT": "1",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1",
+    }
     response = requests.get(json_url, headers=headers, timeout=10)
+    logging.info(f"response from reddit post: {response}")
     response.raise_for_status()
     data = response.json()
+
+    logging.info(f"Data from reddit post: {data}")
 
     # Post meta information is in the first element
     post_data = data[0]["data"]["children"][0]["data"]
@@ -137,7 +243,7 @@ def main() -> None:
     load_dotenv()
 
     # Fetch the API key securely from environment variables
-    api_key = os.getenv("SERP_API_KEY")
+    api_key = os.getenv("SEARCH_API_KEY")
     if not api_key:
         raise EnvironmentError(
             "SEARCH_API_KEY not found in environment variables. Please set it in your .env file."

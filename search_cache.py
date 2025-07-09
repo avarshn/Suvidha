@@ -40,6 +40,7 @@ def _fetch_from_api(query: str, api_key: str, engine: str = "google") -> Dict[st
     url = "https://www.searchapi.io/api/v1/search"
     params = {"engine": engine, "q": query, "api_key": api_key}
     response = requests.get(url, params=params, timeout=10)
+    logging.info(f"Response: {response}") 
     response.raise_for_status()
     return response.json()
 
@@ -53,6 +54,7 @@ def get_search_results(query: str, api_key: str, engine: str = "google") -> Dict
 
     logging.info("Fetching SERP results from API for query: '%s'", query)
     fresh_results = _fetch_from_api(query, api_key, engine)
+    logging.info(f"Got the results: {fresh_results}") 
     cache[query] = fresh_results
     _save_cache(cache)
     logging.info("Saved results to cache for query: '%s'", query)
